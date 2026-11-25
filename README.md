@@ -77,7 +77,7 @@ If something looks wrong on your platform, open an issue with what you saw.
 macOS, Linux, WSL:
 
 ```bash
-git clone <repo-url> hats-for-claude-code
+git clone https://github.com/LukkaT/hats-for-claude-code.git
 cd hats-for-claude-code
 python3 install.py
 ```
@@ -85,7 +85,7 @@ python3 install.py
 Windows (PowerShell):
 
 ```powershell
-git clone <repo-url> hats-for-claude-code
+git clone https://github.com/LukkaT/hats-for-claude-code.git
 cd hats-for-claude-code
 python install.py
 ```
