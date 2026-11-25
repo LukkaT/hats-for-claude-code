@@ -7,6 +7,7 @@ Run from the repository folder:  python3 -m unittest discover tests
 
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -439,6 +440,16 @@ class HatTest(unittest.TestCase):
         r = self.hat("claude")
         self.assertIn("93% of its 5-hour limit", r.stderr)
         self.assertNotIn("weekly", r.stderr)
+
+    def test_status_shows_what_is_left_and_when_it_resets(self):
+        self.write(".config/hats/usage/personal", "12|9999999999|85|9999999999\n")
+        self.hat("add", "work")
+        self.sign_in("work", "me@acme.example")
+        out = re.sub(r"\x1b\[[0-9;]*m", "", self.hat("status").stdout)
+        self.assertRegex(out, r"5h 88% left \(resets \d\d:\d\d\) · week 15% left \(resets \w{3} \d\d:\d\d\)")
+        self.assertIn("no usage yet", out)
+        data = json.loads(self.hat("status", "--json").stdout)
+        self.assertEqual((data["profiles"][0]["left_5h"], data["profiles"][0]["left_week"]), (88, 15))
 
     def test_status_json(self):
         self.hat("add", "work", "me@acme.example")

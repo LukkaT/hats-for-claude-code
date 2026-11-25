@@ -26,7 +26,7 @@ import re
 import sys
 import time
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 HOME = os.path.expanduser("~")
 IS_WIN = os.name == "nt"
 IS_MAC = sys.platform == "darwin"
@@ -613,8 +613,21 @@ def pct(label, n):
     return "%s%s%s%s %d%%%s" % (sgr("2"), label, sgr("0"), sgr("38;5;%d" % col), n, sgr("0"))
 
 
-def usage_text(i):
-    return " · ".join(pct(label, n) for label, n in (("5h", i["u5"]), ("week", i["uw"])) if n is not None)
+def left_text(i, resets=True):
+    """What is left of the 5-hour and weekly limits, e.g.
+    "5h 95% left (resets 15:00) · week 24% left (resets Thu 02:00)". The number is
+    yellow at 50% left or less and red at 20% or less. Empty when nothing is known."""
+    parts = []
+    for label, used, reset, fmt in (("5h", i["u5"], i["r5"], "%H:%M"), ("week", i["uw"], i["rw"], "%a %H:%M")):
+        if used is None:
+            continue
+        left = max(0, 100 - used)
+        col = RED if left <= 20 else YELLOW if left <= 50 else PALETTE[0]
+        text = "%s%s%s %s%d%% left%s" % (sgr("2"), label, sgr("0"), sgr("38;5;%d" % col), left, sgr("0"))
+        if resets and reset:
+            text += " %s(resets %s)%s" % (sgr("2"), time.strftime(fmt, time.localtime(reset)), sgr("0"))
+        parts.append(text)
+    return " · ".join(parts)
 
 
 def describe(cfg, pin=None):
@@ -622,7 +635,7 @@ def describe(cfg, pin=None):
     pin = os.environ.get("HAT_PIN", "") if pin is None else pin
     p, why = cfg.resolve(pin)
     i = info(cfg, p)
-    u = usage_text(i)
+    u = left_text(i, resets=False)
     line = "%s→ %s%s%s  %s%s  %s(%s)%s" % (
         sgr("1;38;5;%d" % cfg.color(p)), p, " · pinned" if pin else "", sgr("0"),
         detail(p, i), "  ·  " + u if u else "", sgr("2"), why, sgr("0"))
@@ -630,22 +643,23 @@ def describe(cfg, pin=None):
 
 
 def rows(cfg, pin):
-    """An aligned "name  who  usage" line per profile, plus each one's state."""
-    labels, details, usages, states = [], [], [], []
+    """Two lines per profile: "name  who", then (indented under "who") what is left of
+    its limits. The second line is None for a profile that is not signed in."""
+    labels, details, limits, states = [], [], [], []
     for p in cfg.names:
         i = info(cfg, p)
         labels.append(label_of(cfg, p, i, p == pin))
         details.append(detail(p, i) + (sgr("2") + " · separate" + sgr("0") if p in cfg.separate else ""))
-        usages.append(usage_text(i))
+        if i["state"] != "ok":
+            limits.append(None)
+        else:
+            limits.append(left_text(i) or sgr("2") + "no usage yet: appears after a Claude session on it" + sgr("0"))
         states.append(i["state"])
     w = max([plain_len(x) for x in labels] or [0])
-    dw = max([plain_len(d) for d, u in zip(details, usages) if u] or [0])
     out = []
-    for label, d, u in zip(labels, details, usages):
-        line = label + " " * (w - plain_len(label)) + "  " + d
-        if u:
-            line += " " * (dw - plain_len(d) + 3) + u
-        out.append(line)
+    for label, d, lim in zip(labels, details, limits):
+        out.append((label + " " * (w - plain_len(label)) + "  " + d,
+                    None if lim is None else " " * (w + 2) + lim))
     return out, states
 
 
@@ -743,10 +757,13 @@ def menu(cfg):
     say("\n  %sClaude account for this terminal%s\n  %s↑/↓ move · Enter select · 1-%d or a to jump · q cancel%s\n"
         % (sgr("1"), sgr("0"), sgr("2"), n, sgr("0")))
     w = Out.stream
+    height = sum(2 if second else 1 for _, second in lines) + 1  # the profiles and "auto"
     while True:
-        for k, line in enumerate(lines):
+        for k, (first, second) in enumerate(lines):
             mark = sgr("1") + "▸" + sgr("0") if k == sel else " "
-            w.write("\r\x1b[K %s %s%d%s %s\n" % (mark, sgr("2"), k + 1, sgr("0"), line))
+            w.write("\r\x1b[K %s %s%d%s %s\n" % (mark, sgr("2"), k + 1, sgr("0"), first))
+            if second:
+                w.write("\r\x1b[K     %s\n" % second)
         mark = sgr("1") + "▸" + sgr("0") if sel == n else " "
         w.write("\r\x1b[K %s %sa%s  %sauto%s  follow the folder — here that means %s%s%s%s\n" % (
             mark, sgr("2"), sgr("0"), sgr("1"), sgr("0"), sgr("1"), here, sgr("0"),
@@ -766,7 +783,7 @@ def menu(cfg):
             break
         if key in ("up", "down"):
             sel = (sel + (n if key == "up" else 1)) % (n + 1)
-        w.write("\x1b[%dA" % (n + 1))  # back to the top of the list to redraw it
+        w.write("\x1b[%dA" % height)  # back to the top of the list to redraw it
     say()
     return "auto" if sel == n else cfg.names[sel]
 
@@ -823,7 +840,10 @@ def cmd_status(cfg, args, emit):
             i = info(cfg, p)
             profiles.append({"name": p, "folder": cfg.pdir[p], "email": i["email"], "org": i["org"],
                              "plan": i["plan"], "state": i["state"], "expected_email": i["want"],
-                             "separate": p in cfg.separate, "usage_5h": i["u5"], "usage_week": i["uw"]})
+                             "separate": p in cfg.separate,
+                             "left_5h": None if i["u5"] is None else max(0, 100 - i["u5"]),
+                             "left_week": None if i["uw"] is None else max(0, 100 - i["uw"]),
+                             "resets_5h": i["r5"], "resets_week": i["rw"]})
         sys.stdout.write(json.dumps({"version": VERSION, "active": cur, "reason": why, "pinned": bool(pin),
                                      "default": cfg.default, "profiles": profiles,
                                      "rules": [{"profile": p, "folder": d} for p, d in cfg.rules]},
@@ -832,8 +852,10 @@ def cmd_status(cfg, args, emit):
     lines, _ = rows(cfg, pin)
     cur, why = cfg.resolve(pin)
     say()
-    for p, line in zip(cfg.names, lines):
-        say(" %s %s" % (sgr("1") + "▸" + sgr("0") if p == cur else " ", line))
+    for p, (first, second) in zip(cfg.names, lines):
+        say(" %s %s" % (sgr("1") + "▸" + sgr("0") if p == cur else " ", first))
+        if second:
+            say("   " + second)
     say("\n  In effect here: %s%s%s  %s(%s)%s\n\n  Folder rules"
         % (sgr("1"), cur, sgr("0"), sgr("2"), why, sgr("0")))
     for p, d in cfg.rules:

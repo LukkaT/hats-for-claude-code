@@ -3,6 +3,15 @@
 What changed in each version of Hats. `hat version` shows yours; `hat update` gets
 the latest.
 
+## 1.1.0 — 2026-11-25
+
+- `hat status` and the F2 menu show how much of each account's 5-hour and weekly
+  limits is **left**, and when each resets, on a line under the account. Accounts
+  without usage data yet say so.
+- `hat status --json`: `left_5h`, `left_week`, `resets_5h`, `resets_week` replace
+  `usage_5h` and `usage_week`.
+- A smoother, clearer demo animation.
+
 ## 1.0.0 — 2026-11-25
 
 First public release.

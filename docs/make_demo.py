@@ -5,7 +5,7 @@ screen-captured so it can be remade after changing how Hats looks.
     python3 -m pip install pillow     # only needed for this script, not for Hats itself
     python3 docs/make_demo.py
 
-All names in it are examples. Colours match the palette (256-colour codes in hat.py).
+All names in it are examples. Colours match the palette in hat.py.
 """
 
 import os
@@ -15,7 +15,6 @@ from PIL import Image, ImageDraw, ImageFont
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "demo.gif")
-
 FONT_DIRS = ["/usr/share/fonts/truetype/dejavu", "/Library/Fonts", "C:/Windows/Fonts"]
 
 
@@ -24,147 +23,269 @@ def font(name, size):
         p = os.path.join(d, name)
         if os.path.exists(p):
             return ImageFont.truetype(p, size)
-    sys.exit("Font %s not found; install DejaVu fonts." % name)
+    sys.exit("Font %s not found; install the DejaVu fonts." % name)
 
 
-SIZE = 16
+# ------------------------------------------------------------------ look
+
+SIZE = 18
 REG, BOLD = font("DejaVuSansMono.ttf", SIZE), font("DejaVuSansMono-Bold.ttf", SIZE)
-CW = REG.getlength("M")                # character width
-LH = 24                                # line height
-COLS, ROWS = 96, 14
-PAD = 18
-TAB_H = 34
-CAP_H = 46
+CAP_FONT, STEP_FONT = font("DejaVuSans-Bold.ttf", 19), font("DejaVuSans-Bold.ttf", 15)
+CW = REG.getlength("M")
+LH = 27
+COLS, ROWS = 92, 15
+PAD, TAB_H, CAP_H = 22, 38, 58
 W = int(COLS * CW) + 2 * PAD
 H = TAB_H + ROWS * LH + 2 * PAD + CAP_H
 
-# Colours: terminal theme, and the per-account colours (xterm-256 114, 75, 176, 246, 221).
-BG, TABBAR, TAB, FG = (37, 40, 42), (27, 29, 31), (37, 40, 42), (211, 215, 207)
-DIM, RULE, CAPTION_BG, CAPTION_FG = (138, 143, 140), (74, 79, 82), (18, 19, 20), (230, 232, 228)
-GREEN, BLUE = (138, 226, 52), (114, 159, 207)
+BG, TABBAR, FG = (37, 40, 42), (24, 26, 27), (211, 215, 207)
+DIM, RULE = (138, 143, 140), (74, 79, 82)
+CAPTION_BG, CAPTION_FG, STEP_BG = (16, 17, 18), (236, 238, 234), (95, 175, 255)
+GREEN, BLUE, YELLOW, RED = (138, 226, 52), (114, 159, 207), (255, 215, 95), (255, 95, 95)
 ACCOUNT = {"personal": (135, 215, 135), "work": (95, 175, 255), "client-a": (215, 135, 215)}
-GREY, YELLOW = (148, 148, 148), (255, 215, 95)
+
+TYPE_MS, BLINK_MS, FADE_FRAMES = 55, 530, 5
+
+# A line is a list of segments: (text, colour, bold, highlighted). A highlighted
+# segment gets an outline, to draw the eye to what just changed.
 
 
-def prompt(account, path, pinned=False):
-    label = account + (" · pinned" if pinned else "")
-    return [(label, ACCOUNT[account], True), (" ", FG, False), ("you@laptop", GREEN, True),
-            (":", FG, False), (path, BLUE, True), ("$ ", FG, False)]
+def seg(text, color=FG, bold=False, hl=False):
+    return (text, color, bold, hl)
 
 
-def plain(text, color=FG, bold=False):
-    return [(text, color, bold)]
+def prompt(account, path, pinned=False, hl=False):
+    return [seg(account + (" · pinned" if pinned else ""), ACCOUNT[account], True, hl), seg(" "),
+            seg("you@laptop", GREEN, True), seg(":"), seg(path, BLUE, True), seg("$ ")]
 
 
-class Screen:
-    """A terminal screen: lines of coloured segments, a tab title and a caption."""
+RULE_LINE = [seg("\x00rule")]
+
+
+class Film:
+    """Collects frames: draws the screen, and handles typing, blinking and fades."""
 
     def __init__(self):
-        self.lines, self.title, self.caption, self.frames = [], "", "", []
+        self.lines, self.title, self.caption, self.step = [], "", "", ""
+        self.cursor = True
+        self.frames = []
 
-    def show(self, ms):
-        self.frames.append((self.render(), ms))
-
-    def render(self):
+    def render(self, cursor_on=True):
         img = Image.new("RGB", (W, H), BG)
         d = ImageDraw.Draw(img)
         d.rectangle([0, 0, W, TAB_H], fill=TABBAR)
-        tab_w = min(W - 2 * PAD, int(REG.getlength(self.title)) + 36)
-        d.rectangle([PAD - 8, 6, PAD - 8 + tab_w, TAB_H], fill=TAB)
-        d.text((PAD + 10, 12), self.title, font=REG, fill=FG)
+        d.rounded_rectangle([PAD - 10, 8, PAD + REG.getlength(self.title) + 26, TAB_H + 6], 6, fill=BG)
+        d.text((PAD + 8, 15), self.title, font=REG, fill=FG)
         y = TAB_H + PAD
-        for line in self.lines[-ROWS:]:
+        lines = self.lines[-ROWS:]
+        for n, line in enumerate(lines):
             x = PAD
-            for text, color, bold in line:
+            for text, color, bold, hl in line:
                 if text == "\x00rule":
                     d.line([PAD, y + LH // 2, W - PAD, y + LH // 2], fill=RULE, width=1)
                     continue
                 f = BOLD if bold else REG
+                width = f.getlength(text)
+                if hl:
+                    d.rounded_rectangle([x - 6, y - 3, x + width + 6, y + LH - 4], 6, outline=color, width=2)
                 d.text((x, y), text, font=f, fill=color)
-                x += f.getlength(text)
+                x += width
+            if self.cursor and cursor_on and n == len(lines) - 1:
+                d.rectangle([x + 1, y + 2, x + CW - 1, y + LH - 5], fill=FG)
             y += LH
-        d.rectangle([0, H - CAP_H, W, H], fill=CAPTION_BG)
-        d.text((PAD, H - CAP_H + 13), self.caption, font=BOLD, fill=CAPTION_FG)
+        top = H - CAP_H
+        d.rectangle([0, top, W, H], fill=CAPTION_BG)
+        x = PAD
+        if self.step:
+            sw = STEP_FONT.getlength(self.step) + 18
+            d.rounded_rectangle([x, top + 15, x + sw, top + 43], 14, fill=STEP_BG)
+            d.text((x + 9, top + 20), self.step, font=STEP_FONT, fill=CAPTION_BG)
+            x += sw + 14
+        d.text((x, top + 17), self.caption, font=CAP_FONT, fill=CAPTION_FG)
         return img
 
-    def type(self, text, color=FG):
-        """Type into the last line, a few characters per frame."""
-        for i in range(0, len(text), 3):
-            self.lines[-1] = self.lines[-1] + [(text[i:i + 3], color, False)]
-            self.show(70)
+    def add(self, img, ms):
+        self.frames.append((img, ms))
+
+    def hold(self, ms):
+        """Show the screen for ms, with the cursor blinking."""
+        on = True
+        while ms > 0:
+            t = min(BLINK_MS, ms)
+            self.add(self.render(on), t)
+            ms -= t
+            on = not on
+
+    def type(self, text, line=-1, color=FG):
+        """Type into a line, one character per frame."""
+        for ch in text:
+            self.lines[line] = self.lines[line] + [seg(ch, color)]
+            self.add(self.render(True), TYPE_MS)
+        self.hold(350)
+
+    def change(self, apply, whole=False):
+        """Move to the screen apply() sets up. The tab title and caption switch at once
+        (fading text over text reads as a blur). The terminal area either fades the new
+        lines in, or, for a whole new screen (whole=True), dims to the background and
+        brightens again, so two screens are never seen on top of each other."""
+        before = self.render(True)
+        apply()
+        after = self.render(True)
+        body = (0, TAB_H, W, H - CAP_H)
+        blank = Image.new("RGB", (W, H), BG)
+
+        def frame(a, b, t):
+            img = after.copy()
+            img.paste(Image.blend(a, b, t).crop(body), body[:2])
+            return img
+
+        if whole:
+            for k in range(1, FADE_FRAMES + 1):
+                self.add(frame(before, blank, k / FADE_FRAMES), 35)
+            for k in range(1, FADE_FRAMES + 1):
+                self.add(frame(blank, after, k / FADE_FRAMES), 35)
+        else:
+            for k in range(1, FADE_FRAMES + 1):
+                self.add(frame(before, after, k / (FADE_FRAMES + 1)), 40)
 
 
-def scenes():
-    s = Screen()
+# ------------------------------------------------------------------ what is shown
 
-    s.caption = "Your prompt always shows which Claude account `claude` will use"
-    s.title = "personal — ~"
-    s.lines = [prompt("personal", "~")]
-    s.show(1600)
-    s.type("cd ~/code/acme-app")
-    s.show(300)
+def limits(indent, parts, resets=True):
+    """A second line under an account: what is left of its limits."""
+    line = [seg(" " * indent)]
+    for j, (label, left, reset) in enumerate(parts):
+        col = RED if left <= 20 else YELLOW if left <= 50 else ACCOUNT["personal"]
+        if j:
+            line.append(seg(" · ", DIM))
+        line += [seg(label + " ", DIM), seg("%d%% left" % left, col)]
+        if resets:
+            line.append(seg(" (resets %s)" % reset, DIM))
+    return line
 
-    s.caption = "Folders belong to accounts: cd into Acme's code and you are on the work account"
-    s.title = "work — ~/code/acme-app"
-    s.lines.append(prompt("work", "~/code/acme-app"))
-    s.show(2200)
-    s.type("claude")
-    s.show(400)
 
-    s.caption = "Inside Claude Code, the status line shows the account, team and usage"
-    s.title = "work — ~/code/acme-app"
-    s.lines = [[], plain("  Claude Code is running in ~/code/acme-app", DIM), [],
-               [("\x00rule", RULE, False)], plain("> ", FG, True), [("\x00rule", RULE, False)],
-               [("  work", ACCOUNT["work"], True), ("  Acme · Team  ", FG, False), ("│", DIM, False),
-                ("  Opus 5.5 · high  ", FG, False), ("│", DIM, False), ("  context", DIM, False),
-                (" 4% · ", FG, False), ("5h", DIM, False), (" 12% · ", FG, False),
-                ("week", DIM, False), (" 31%", FG, False)]]
-    s.show(400)
-    s.lines[4] = plain("> ", FG, True)
-    for chunk in ["fix the ", "failing ", "login test"]:
-        s.lines[4] = s.lines[4] + [(chunk, FG, False)]
-        s.show(160)
-    s.show(2600)
+ACCOUNTS = [("personal", "you@example.com · Max 5x", [("5h", 92, "18:00"), ("week", 64, "Thu 02:00")]),
+            ("work", "you@acme.example · Acme · Team", [("week", 81, "Mon 09:00")]),
+            ("client-a", "you@client-a.example · Client A · Team", [("5h", 18, "16:30"), ("week", 47, "Fri 11:00")])]
 
-    s.caption = "Press F2 (or type hat) to pick an account by hand for this terminal"
-    s.lines = [prompt("work", "~/code/acme-app")]
-    s.show(900)
-    s.lines += [[], plain("  Claude account for this terminal", FG, True),
-                plain("  ↑/↓ move · Enter select · 1-3 or a to jump · q cancel", DIM), []]
-    rows = [("personal", "you@example.com · Max 5x"), ("work", "you@acme.example · Acme · Team"),
-            ("client-a", "you@client-a.example · Client A · Team")]
 
-    def menu(sel):
-        out = []
-        for k, (name, who) in enumerate(rows):
-            mark = ("▸", FG, True) if k == sel else (" ", FG, False)
-            out.append([(" ", FG, False), mark, (" %d " % (k + 1), DIM, False),
-                        ("%-9s" % name, ACCOUNT[name], True), ("  " + who, FG, False)])
-        out.append([("   a  ", DIM, False), ("auto", FG, True),
-                    ("  follow the folder — here that means work", FG, False)])
-        return out
+def menu_lines(sel):
+    out = []
+    for k, (name, who, parts) in enumerate(ACCOUNTS):
+        mark = seg("▸", FG, True) if k == sel else seg(" ")
+        out.append([seg(" "), mark, seg(" %d " % (k + 1), DIM), seg("%-8s" % name, ACCOUNT[name], True),
+                    seg("  " + who)])
+        out.append(limits(15, parts))
+    out.append([seg("   a  ", DIM), seg("auto", FG, True), seg("  follow the folder — here that means work")])
+    return out
 
-    base = list(s.lines)
-    for sel, ms in ((1, 1300), (0, 1100)):
-        s.lines = base + menu(sel)
-        s.show(ms)
-    s.lines = base + menu(0) + [[],
-                                [("→ personal · pinned", ACCOUNT["personal"], True),
-                                 ("  you@example.com · Max 5x  ", FG, False),
-                                 ("(pinned in this terminal)", DIM, False)],
-                                prompt("personal", "~/code/acme-app", pinned=True)]
-    s.title = "personal (pinned) — ~/code/acme-app"
-    s.caption = "Pinned: this terminal stays on personal in every folder, until `hat auto`"
-    s.show(3600)
-    return s.frames
+
+def status_lines():
+    out = [[]]
+    for k, (name, who, parts) in enumerate(ACCOUNTS):
+        label = name + (" · pinned" if k == 0 else "")
+        out.append([seg(" ▸ " if k == 0 else "   ", FG, True), seg("%-17s" % label, ACCOUNT[name], True),
+                    seg("  " + who)])
+        out.append(limits(22, parts))
+    return out
+
+
+def story():
+    f = Film()
+
+    # 1. The prompt shows the account.
+    f.step, f.caption, f.title = "1/5", "Your prompt always shows which Claude account is active", "personal — ~"
+    f.lines = [prompt("personal", "~", hl=True)]
+    f.hold(2400)
+    f.lines = [prompt("personal", "~")]
+    f.type("cd ~/code/acme")
+
+    # 2. A folder picks its account.
+    def to_work():
+        f.step, f.caption = "2/5", "Folders belong to accounts: in Acme's code you are on work"
+        f.title = "work — ~/code/acme"
+        f.lines.append(prompt("work", "~/code/acme", hl=True))
+    f.change(to_work)
+    f.hold(2600)
+    f.lines[-1] = prompt("work", "~/code/acme")
+    f.type("claude")
+
+    # 3. Inside Claude Code.
+    def to_claude():
+        f.step, f.caption = "3/5", "Inside Claude Code, the status line shows the account too"
+        f.cursor = False
+        f.lines = [[], [seg("  Claude Code  ", FG, True), seg("~/code/acme", DIM)], [], RULE_LINE,
+                   [seg("> ", FG, True)], RULE_LINE,
+                   [seg("  "), seg("work", ACCOUNT["work"], True, True), seg("  Acme · Team  "), seg("│", DIM),
+                    seg("  Opus 5.5 · high  "), seg("│", DIM), seg("  context", DIM), seg(" 4% · "),
+                    seg("5h", DIM), seg(" 12% · "), seg("week", DIM), seg(" 19%")]]
+    f.change(to_claude, whole=True)
+    f.hold(1200)
+    for ch in "fix the failing login test":
+        f.lines[4] = f.lines[4] + [seg(ch)]
+        f.add(f.render(), TYPE_MS)
+    f.hold(2200)
+
+    # 4. F2: pick by hand.
+    def to_shell():
+        f.step, f.caption, f.cursor = "4/5", "Press F2 (or type hat) to choose an account by hand", True
+        f.lines = [prompt("work", "~/code/acme")]
+    f.change(to_shell, whole=True)
+    f.hold(1400)
+    header = [[], [seg("  Claude account for this terminal", FG, True)],
+              [seg("  ↑/↓ move · Enter select · 1-3 or a to jump · q cancel", DIM)], []]
+
+    def open_menu():
+        f.cursor = False
+        f.lines = [prompt("work", "~/code/acme")] + header + menu_lines(1)
+    f.change(open_menu)
+    f.hold(1600)
+    f.lines = [prompt("work", "~/code/acme")] + header + menu_lines(0)
+    f.hold(1600)
+
+    def pinned():
+        f.caption = "Picked by hand: this terminal stays on personal in every folder"
+        f.title, f.cursor = "personal (pinned) — ~/code/acme", True
+        f.lines = [prompt("work", "~/code/acme"), [],
+                   [seg("→ personal · pinned", ACCOUNT["personal"], True), seg("  you@example.com · Max 5x"),
+                    seg("  (pinned in this terminal)", DIM)],
+                   prompt("personal", "~/code/acme", pinned=True, hl=True)]
+    f.change(pinned, whole=True)
+    f.hold(2600)
+    f.lines[-1] = prompt("personal", "~/code/acme", pinned=True)
+    f.type("hat status")
+
+    # 5. What is left of each account's limits.
+    def to_status():
+        f.step, f.caption = "5/5", "hat status: how much of each account's limits is left, and when they reset"
+        f.cursor = False
+        f.lines = f.lines + status_lines()
+    f.change(to_status)
+    f.hold(5500)
+
+    def back_to_start():
+        f.step, f.caption, f.title = "1/5", "Your prompt always shows which Claude account is active", "personal — ~"
+        f.cursor = True
+        f.lines = [prompt("personal", "~", hl=True)]
+    f.change(back_to_start, whole=True)
+    return f.frames
 
 
 def main():
-    frames = scenes()
-    images = [f.convert("P", palette=Image.ADAPTIVE, colors=64) for f, _ in frames]
+    frames = story()
+    # One shared palette for every frame keeps colours steady (no flicker between
+    # frames). It is built from frames spread over the whole film, so every account
+    # colour is in it.
+    picks = frames[::max(1, len(frames) // 12)]
+    sample = Image.new("RGB", (W, H * len(picks)))
+    for k, (img, _) in enumerate(picks):
+        sample.paste(img, (0, H * k))
+    palette = sample.quantize(colors=192, method=Image.Quantize.MEDIANCUT)
+    images = [img.quantize(palette=palette, dither=Image.Dither.NONE) for img, _ in frames]
     images[0].save(OUT, save_all=True, append_images=images[1:], duration=[ms for _, ms in frames],
                    loop=0, optimize=True, disposal=1)
-    print("wrote %s (%d frames, %d KB)" % (OUT, len(frames), os.path.getsize(OUT) // 1024))
+    print("wrote %s (%d frames, %.1f s, %d KB)"
+          % (OUT, len(frames), sum(ms for _, ms in frames) / 1000, os.path.getsize(OUT) // 1024))
 
 
 if __name__ == "__main__":

@@ -71,7 +71,7 @@ That's it. `cd ~/code/acme` and your prompt changes to `work`.
 | `hat` or **F2** | Opens a menu to pick an account for this terminal window. |
 | `hat use work` | Picks `work` for this terminal without the menu. The terminal stays on it in every folder; this is called **pinned**. |
 | `hat auto` | Undoes a pin, so the folder decides again. |
-| `hat status` | Lists your accounts: who is signed in, how much of the usage limits is used, and which folders belong to which account. |
+| `hat status` | Lists your accounts: who is signed in, how much of each usage limit is **left** and when it resets, and which folders belong to which account. |
 
 ## All commands
 
