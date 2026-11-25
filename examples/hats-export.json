@@ -1,0 +1,35 @@
+{
+  "hats": "1.0.0",
+  "default": "personal",
+  "style": "clean",
+  "profiles": [
+    {
+      "name": "personal",
+      "folder": "native",
+      "email": "you@example.com",
+      "separate": false
+    },
+    {
+      "name": "work",
+      "folder": "~/.claude-profiles/work",
+      "email": "you@acme.example",
+      "separate": false
+    },
+    {
+      "name": "client-b",
+      "folder": "~/.claude-profiles/client-b",
+      "email": "",
+      "separate": true
+    }
+  ],
+  "rules": [
+    {
+      "profile": "work",
+      "folder": "~/code/acme"
+    },
+    {
+      "profile": "client-b",
+      "folder": "~/code/client-b"
+    }
+  ]
+}
