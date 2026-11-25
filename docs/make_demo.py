@@ -271,8 +271,8 @@ def story():
     return f.frames
 
 
-def main():
-    frames = story()
+def save(frames, out):
+    """Write the frames as a looping GIF."""
     # One shared palette for every frame keeps colours steady (no flicker between
     # frames). It is built from frames spread over the whole film, so every account
     # colour is in it.
@@ -282,10 +282,14 @@ def main():
         sample.paste(img, (0, H * k))
     palette = sample.quantize(colors=192, method=Image.Quantize.MEDIANCUT)
     images = [img.quantize(palette=palette, dither=Image.Dither.NONE) for img, _ in frames]
-    images[0].save(OUT, save_all=True, append_images=images[1:], duration=[ms for _, ms in frames],
+    images[0].save(out, save_all=True, append_images=images[1:], duration=[ms for _, ms in frames],
                    loop=0, optimize=True, disposal=1)
     print("wrote %s (%d frames, %.1f s, %d KB)"
-          % (OUT, len(frames), sum(ms for _, ms in frames) / 1000, os.path.getsize(OUT) // 1024))
+          % (out, len(frames), sum(ms for _, ms in frames) / 1000, os.path.getsize(out) // 1024))
+
+
+def main():
+    save(story(), OUT)
 
 
 if __name__ == "__main__":

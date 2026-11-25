@@ -12,9 +12,16 @@ environment variable. The shell shows the active profile and picks it by folder;
 everything except the login is shared through links to `~/.claude`.
 
 Its purpose is narrow: **you can always see which account is active, and the wrong
-account cannot be used by accident.** Features that work against that (for example
-moving work to another account automatically when one hits a usage limit) do not
-belong here.
+account cannot be used by accident.** Features that work against that do not belong
+here.
+
+Automatic switching (1.2.0) is allowed only on these terms:
+- the owner turns it on in `hat settings`;
+- it moves only between accounts the owner put in the order;
+- it always says what it did;
+- it asks before moving a chat that is already running.
+
+An account outside the order is never switched to or from.
 
 ## Layout
 
@@ -25,6 +32,8 @@ belong here.
 | `install.py` | Install, update, uninstall, purge on every platform. Imports `hat.py` for safe folder removal. |
 | `tests/test_hat.py` | Tests. Run them before and after every change. |
 | `docs/make_demo.py` | Draws `docs/demo.gif` (needs Pillow; not a Hats dependency). |
+| `docs/make_settings_demo.py` | Draws `docs/settings.gif`, the automatic-switching walkthrough, with the same look. |
+| `docs/settings.md` | The full guide to `hat settings` and automatic switching. Keep it in step with the code. |
 | `examples/` | Example settings file and export. |
 | `CHANGELOG.md` | One entry per version. |
 
@@ -47,6 +56,16 @@ belong here.
 - **`claude`** resolves the profile, then on Linux and macOS replaces itself with Claude
   Code (`os.execve`), so signals and exit codes are Claude's own. On Windows it waits
   with Ctrl-C ignored.
+- **Automatic switching** (`takeover`, `run_chat`):
+  - At start, a profile in the order with less than `switch_left`% of a limit left gives way to the first
+    profile in the order with room left.
+  - When switching is on and the profile is in the order, a chat is *watched*: Hats
+    waits for Claude (Ctrl-C ignored, as on Windows) instead of `execve`, and sets
+    `HAT_RUN`.
+  - The status line writes the chat's `session_id` to `runs/<HAT_RUN>`.
+  - After Claude exits with the profile low, Hats asks, then runs `claude --resume <id>` on
+    the next profile. Chats are in the shared `projects/`; a `--separate` profile
+    can't take part.
 - **Profile resolution** (`Config.resolve`): `HAT_PIN` (a pin in this terminal) → the
   longest matching `dir` rule → `default`.
 
@@ -118,6 +137,8 @@ Treat these as unverified and ask for reports:
 - macOS (Keychain-based login detection);
 - Windows (junctions, hard links, PowerShell profiles, `msvcrt` key reading);
 - `hat code` with real editors.
+- carrying a chat over with real Claude Code (`claude --resume <id>` on another
+  profile, `session_id` in the status-line input).
 
 ## Adding a command
 
@@ -141,7 +162,8 @@ If sign-in states look wrong after a Claude Code update, check `login_of()` firs
 
 1. Bump `VERSION` in `hat.py`.
 2. Add a dated section to `CHANGELOG.md`.
-3. If the look changed, run `python3 docs/make_demo.py` and commit the new GIF.
+3. If the look changed, run `python3 docs/make_demo.py` (and `docs/make_settings_demo.py`
+   for the settings screen) and commit the new GIF.
 4. Users get it with `hat update` (git pull plus reinstall).
 
 ## Privacy in this repository

@@ -40,7 +40,7 @@ hat__precmd() {
 
 _hat() {
   if (( CURRENT == 2 )); then
-    compadd pick status use auto add remove login map unmap default style run exec code doctor update export import edit which version help
+    compadd pick status use auto add remove login map unmap default style settings run exec code doctor update export import edit which version help
   elif (( CURRENT == 3 )); then
     case $words[2] in
       (style) compadd clean badge minimal ;;

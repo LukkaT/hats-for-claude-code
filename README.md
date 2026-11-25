@@ -92,6 +92,20 @@ That's it. `cd ~/code/acme` and your prompt changes to `work`.
 | `hat unmap [folder]` | Removes that link. |
 | `hat which` | Shows which account applies in the current folder. |
 
+**Switching when an account runs low**
+
+![hat settings: turn switching on, choose when an account is low, choose which accounts take turns; then a chat continues on the next account](docs/settings.gif)
+
+| Command | What it does |
+| --- | --- |
+| `hat settings` | Turns **automatic switching** on or off, sets when an account counts as low (for example less than 10% left), and chooses which accounts **take turns**. The full guide: [Automatic switching](docs/settings.md). |
+| `hat settings switch on` / `off`, `level 10`, `order personal work` | The same, without the screen. |
+
+In short: when the account in use has less than that much left of its 5-hour or weekly
+limit, `claude` starts on the next account under **Take turns**. A chat that is
+already running continues there after `/exit`, once you say yes. Accounts under
+**Never switch** are never switched to or from.
+
 **Running things**
 
 | Command | What it does |
@@ -132,8 +146,8 @@ until you close them.
   an account that must be kept apart.
 - **Claude knows** which account it runs on: each session starts with a short note
   saying so.
-- **Limits:** when an account has used 90% of its 5-hour or weekly limit, `claude`
-  warns you before starting.
+- **Limits:** when an account has 10% or less left of its 5-hour or weekly limit,
+  `claude` warns you before starting. To move on to another account instead, see [Automatic switching](docs/settings.md).
 - **Platforms:** tested on Linux. macOS and Windows support is new; if something
   looks wrong, please [open an issue](https://github.com/LukkaT/hats-for-claude-code/issues).
 - **Something wrong?** Run `hat doctor`, or see [Troubleshooting](docs/troubleshooting.md).

@@ -3,6 +3,24 @@
 What changed in each version of Hats. `hat version` shows yours; `hat update` gets
 the latest.
 
+## 1.2.0 — 2026-11-26
+
+- **Automatic switching**, off until you turn it on in the new **`hat settings`**
+  screen. You choose when an account counts as low (less than 5% to 50% left of its
+  5-hour or weekly limit) and which accounts take turns, in which order.
+  - `claude` starts on the next account that takes turns when the one in use is low,
+    and says so.
+  - During a chat, the status line shows `/exit → continue on <account>`. After
+    `/exit`, Hats asks before continuing the same chat there with `claude --resume`.
+  - Accounts under "Never switch to or from" are never switched to or from.
+  - A "Now:" line on the screen says in plain words what will happen.
+  - `hat settings switch on|off`, `level <% left>` and `order <accounts>` do the same
+    from scripts.
+- `hat status` says whether switching is on, and `hat status --json` has `switching`.
+- The warning near a limit says how much is left ("has 7% left"), like `hat status`.
+- Guide: `docs/settings.md`. Animation: `docs/settings.gif`
+  (`docs/make_settings_demo.py`).
+
 ## 1.1.0 — 2026-11-25
 
 - `hat status` and the F2 menu show how much of each account's 5-hour and weekly

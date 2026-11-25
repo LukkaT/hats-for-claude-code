@@ -27,6 +27,11 @@ FAKE_CLAUDE = textwrap.dedent("""\
     d = os.environ.get("CLAUDE_CONFIG_DIR", "")
     with open(os.path.join(os.environ["HOME"], "claude-calls.log"), "a") as f:
         f.write(json.dumps({"dir": d, "args": sys.argv[1:]}) + "\\n")
+    if os.environ.get("FAKE_STATUS") and "--resume" not in sys.argv:
+        # Claude Code runs the status line during a chat: it reports the limits and the chat's id.
+        import subprocess
+        subprocess.run([sys.executable, os.environ["FAKE_HAT"], "statusline"],
+                       input=os.environ["FAKE_STATUS"], text=True, capture_output=True)
     if sys.argv[1:3] == ["auth", "logout"] and d:
         for name in (".credentials.json",):
             p = os.path.join(d, name)
@@ -438,8 +443,160 @@ class HatTest(unittest.TestCase):
     def test_claude_warns_near_a_usage_limit(self):
         self.write(".config/hats/usage/personal", "93|9999999999|40|9999999999\n")
         r = self.hat("claude")
-        self.assertIn("93% of its 5-hour limit", r.stderr)
+        self.assertIn("'personal' has 7% left of its 5-hour limit", r.stderr)
         self.assertNotIn("weekly", r.stderr)
+
+    # automatic switching ----------------------------------------------------
+
+    def switching(self, *order, level="10"):
+        self.hat("add", "work")
+        self.sign_in("work", "me@acme.example")
+        self.hat("add", "client")
+        self.sign_in("client", "me@client-a.example")
+        self.hat("settings", "switch", "on")
+        self.hat("settings", "level", level)
+        self.hat("settings", "order", *order)
+
+    def pty_hat(self, args, keys, env=None, timeout=10):
+        """Run hat.py in a pseudo-terminal, type `keys` (a list of (wait seconds, bytes)),
+        and return everything it showed."""
+        import pty
+        import select
+        import time
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.chdir(self.home)
+            os.execve(sys.executable, [sys.executable, HAT] + args, dict(self.env, TERM="xterm", **(env or {})))
+        out, end = b"", time.time() + timeout
+        keys = list(keys)
+        next_at = time.time() + (keys[0][0] if keys else 0)
+        while time.time() < end:
+            if keys and time.time() >= next_at:
+                os.write(fd, keys.pop(0)[1])
+                next_at = time.time() + (keys[0][0] if keys else 0)
+            if select.select([fd], [], [], 0.05)[0]:
+                try:
+                    chunk = os.read(fd, 65536)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                out += chunk
+        _, status = os.waitpid(pid, 0)
+        os.close(fd)
+        self.assertEqual(os.WEXITSTATUS(status), 0, out.decode("utf-8", "replace"))
+        return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", out.decode("utf-8", "replace"))
+
+    def test_settings_are_saved_and_shown(self):
+        out = re.sub(r"\x1b\[[0-9;]*m", "", self.hat("settings").stdout)
+        self.assertIn("Move to another account when one runs low     [ off ]", out)
+        self.assertIn("Now: nothing moves.", out)
+        self.switching("personal", "work")
+        conf = self.read(".config/hats/hats.conf")
+        self.assertIn("switch on\n", conf)
+        self.assertIn("switch_left 10\n", conf)
+        self.assertIn("order personal work\n", conf)
+        out = re.sub(r"\x1b\[[0-9;]*m", "", self.hat("settings").stdout)
+        self.assertRegex(out, r"Take turns, top first\s+left now\n\s+1  personal\s+no usage yet\n\s+2  work\s+no usage yet")
+        self.assertRegex(out, r"Never switch to or from\n\s+client\n")
+        self.assertIn("Now: claude starts on personal. When it has less than 10%", out)
+        data = json.loads(self.hat("status", "--json").stdout)
+        self.assertEqual(data["switching"], {"on": True, "left_below": 10, "order": ["personal", "work"]})
+        r = self.hat("settings", "level", "60", ok=False)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("from 5 to 50", r.stderr)
+        self.assertIn("unknown profile 'nobody'", self.hat("settings", "order", "nobody", ok=False).stderr)
+        self.hat("settings", "switch", "off")
+        self.assertIn("Automatic switching: off", self.hat("status").stdout)
+        self.assertIn("order personal work", self.read(".config/hats/hats.conf"), "the order is kept while off")
+
+    def test_claude_starts_on_the_next_account_in_the_order_when_one_is_low(self):
+        self.switching("personal", "work", "client")
+        self.write(".config/hats/usage/personal", "93|9999999999|40|9999999999\n")
+        self.write(".config/hats/usage/work", "20|9999999999|95|9999999999\n")   # week is low too
+        r = self.hat("claude", "--model", "x")
+        self.assertIn("'personal' has 7% left of its 5-hour limit", r.stderr)
+        self.assertIn("starting on 'client'", r.stderr)
+        self.assertEqual(self.claude_calls()[-1], {"dir": self.path(".claude-profiles/client"), "args": ["--model", "x"]})
+        self.hat("claude", "auth", "login")
+        self.assertEqual(self.claude_calls()[-1], {"dir": "", "args": ["auth", "login"]},
+                         "signing in stays on the account in the prompt")
+        self.hat("claude", "-p", "hi")
+        self.assertEqual(self.claude_calls()[-1]["dir"], self.path(".claude-profiles/client"), "-p uses the limits")
+
+    def test_claude_stays_put_when_switching_is_off_or_the_account_is_not_in_the_order(self):
+        self.switching("work", "client")
+        self.write(".config/hats/usage/personal", "99|9999999999|40|9999999999\n")
+        r = self.hat("claude")
+        self.assertNotIn("starting on", r.stderr, "personal is not in the order")
+        self.assertEqual(self.claude_calls()[-1]["dir"], "")
+        self.hat("settings", "order", "personal", "work")
+        self.hat("settings", "switch", "off")
+        self.hat("claude")
+        self.assertEqual(self.claude_calls()[-1]["dir"], "", "switching is off")
+        self.hat("settings", "switch", "on")
+        self.write(".config/hats/usage/work", "99|9999999999|40|9999999999\n")
+        r = self.hat("claude")
+        self.assertIn("and so has every other account in your order", r.stderr)
+        self.assertEqual(self.claude_calls()[-1]["dir"], "")
+
+    def test_a_chat_carries_on_on_the_next_account_after_asking(self):
+        self.switching("personal", "work")
+        status = json.dumps({"session_id": "chat-123", "rate_limits": {
+            "five_hour": {"used_percentage": 96, "resets_at": 9999999999},
+            "seven_day": {"used_percentage": 30, "resets_at": 9999999999}}})
+        out = self.pty_hat(["claude"], [(1.5, b"\r")], env={"FAKE_STATUS": status, "FAKE_HAT": HAT})
+        self.assertIn("'personal' has 4% left of its 5-hour limit", out)
+        self.assertIn("Continue this chat on 'work'? [Y/n]", out)
+        calls = self.claude_calls()
+        self.assertEqual(calls[0], {"dir": "", "args": []})
+        self.assertEqual(calls[1], {"dir": self.path(".claude-profiles/work"), "args": ["--resume", "chat-123"]})
+        self.assertEqual(os.listdir(self.path(".config/hats/runs")), [], "the note of the chat is removed")
+
+    def test_answering_no_keeps_the_chat_where_it_is(self):
+        self.switching("personal", "work")
+        status = json.dumps({"session_id": "chat-123", "rate_limits": {"five_hour": {"used_percentage": 96}}})
+        self.pty_hat(["claude"], [(1.5, b"n\r")], env={"FAKE_STATUS": status, "FAKE_HAT": HAT})
+        self.assertEqual(len(self.claude_calls()), 1)
+
+    def test_status_line_offers_the_handover_only_in_a_watched_run(self):
+        self.switching("personal", "work")
+        data = json.dumps({"session_id": "c1", "rate_limits": {"five_hour": {"used_percentage": 95}}})
+        run = "0123456789abcdef0123456789abcdef"
+        out = self.hat("statusline", stdin=data, env={"HAT_RUN": run}).stdout
+        self.assertIn("/exit → continue on work", out)
+        self.assertEqual(self.read(".config/hats/runs/" + run).strip(), "c1")
+        self.assertNotIn("/exit", self.hat("statusline", stdin=data).stdout)
+        bad = self.hat("statusline", stdin=data, env={"HAT_RUN": "../../evil"}).stdout
+        self.assertNotIn("/exit", bad)
+        self.assertFalse(os.path.exists(self.path(".config/evil")))
+
+    def test_settings_screen_by_keys(self):
+        self.hat("add", "work")
+        down, up, left, space, enter = b"\x1b[B", b"\x1b[A", b"\x1b[D", b" ", b"\r"
+        keys = [space,            # switching on
+                down, left,       # level: 10% -> 5% left
+                down, enter, up, enter,         # pick up personal, into Take turns, drop
+                down, enter, up, enter,         # the same for work: it lands under personal
+                enter, up, enter,               # pick work up again and move it above personal
+                b"q"]
+        out = self.pty_hat(["settings"], [(0.8, keys[0])] + [(0.25, k) for k in keys[1:]])
+        self.assertIn("Hats · Settings", out)
+        self.assertIn("enter: pick up an account, ↑↓ move, enter drop", out)
+        self.assertIn("↑↓ move it · enter drop · esc put it back", out)
+        conf = self.read(".config/hats/hats.conf")
+        self.assertIn("switch on\n", conf)
+        self.assertIn("switch_left 5\n", conf)
+        self.assertIn("order work personal\n", conf)
+
+    def test_esc_puts_a_picked_up_account_back(self):
+        self.hat("add", "work")
+        self.hat("settings", "switch", "on")
+        self.hat("settings", "order", "personal")
+        down, up, enter = b"\x1b[B", b"\x1b[A", b"\r"
+        keys = [down, down, down, enter, up, b"\x1b", b"q"]   # pick up work, move it, then esc
+        self.pty_hat(["settings"], [(0.8, keys[0])] + [(0.25, k) for k in keys[1:]])
+        self.assertIn("order personal\n", self.read(".config/hats/hats.conf"))
 
     def test_status_shows_what_is_left_and_when_it_resets(self):
         self.write(".config/hats/usage/personal", "12|9999999999|85|9999999999\n")

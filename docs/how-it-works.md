@@ -47,6 +47,10 @@ link back to `~/.claude`, so all accounts share it:
   that folder becomes the account `personal` and is what other accounts share (the
   `base` line in the settings file).
 
+Because chats are in the shared `projects/`, automatic switching (`hat settings`) can
+continue a chat on another account with `claude --resume`. It does this only between
+accounts that aren't `--separate`.
+
 ## The settings file
 
 `~/.config/hats/hats.conf` (open it with `hat edit`) is plain text, the same on every

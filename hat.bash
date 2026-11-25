@@ -37,7 +37,7 @@ hat__prompt() {
 hat__complete() {
   local cur=${COMP_WORDS[COMP_CWORD]}
   if ((COMP_CWORD == 1)); then
-    COMPREPLY=($(compgen -W "pick status use auto add remove login map unmap default style run exec code doctor update export import edit which version help" -- "$cur"))
+    COMPREPLY=($(compgen -W "pick status use auto add remove login map unmap default style settings run exec code doctor update export import edit which version help" -- "$cur"))
   elif ((COMP_CWORD == 2)) && [[ ${COMP_WORDS[1]} == style ]]; then
     COMPREPLY=($(compgen -W "clean badge minimal" -- "$cur"))
   elif ((COMP_CWORD == 2)) && [[ ${COMP_WORDS[1]} =~ ^(use|remove|map|default|login|run|exec|code)$ ]]; then

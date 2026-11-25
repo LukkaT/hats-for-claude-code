@@ -26,7 +26,7 @@ import re
 import sys
 import time
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 HOME = os.path.expanduser("~")
 IS_WIN = os.name == "nt"
 IS_MAC = sys.platform == "darwin"
@@ -49,6 +49,12 @@ SHARED_FILES = ["settings.json", "CLAUDE.md", "keybindings.json", "history.jsonl
 WORK_DATA = {"projects", "file-history", "plans", "tasks", "todos", "paste-cache",
              "session-env", "history.jsonl"}
 WARN_AT = 90  # % of a usage limit at which `claude` shows a warning
+LOW_MIN, LOW_MAX, LOW_STEP = 5, 50, 5  # "runs low" = less than this % left (hat settings)
+# Claude Code commands that manage Claude rather than use the limits: never switched.
+MANAGE = {"-v", "--version", "-h", "--help", "auth", "mcp", "config", "doctor", "update", "install",
+          "plugin", "setup-token", "migrate-installer"}
+# ...and with -p / --print, a one-off answer: switched at start, but never watched as a chat.
+NOT_CHAT = MANAGE | {"-p", "--print"}
 
 # Editors whose Claude extension can run on a profile: command, extensions folder.
 EDITORS = {"code": ("code", "~/.vscode/extensions"),
@@ -64,6 +70,9 @@ STARTER = """\
 # dir     <profile> <directory>               longest matching directory wins
 # separate <profile>                          keeps its history and memory to itself
 # base    <directory>                         what profiles share; ~/.claude when not set
+# switch  <on|off>                            automatic switching (hat settings)
+# switch_left <percent>                       ...when an account has less than this % of a limit left
+# order   <profile> [<profile> ...]           ...to the first of these with room left
 
 default personal
 style clean
@@ -97,6 +106,7 @@ In its colour: signed in.  Grey: not signed in.  ⚠ in red: wrong account.
   hat unmap [dir]            remove that rule
   hat default <profile>      profile for folders without a rule
   hat style <clean|badge|minimal>  how the prompt shows the account
+  hat settings               automatic switching: on/off, the level, the order of accounts
   hat run <profile> [args]   one-off: run claude with a profile
   hat exec <profile> <cmd>   run any command with a profile
   hat code <profile> [dir] [--editor code|cursor|windsurf]
@@ -220,6 +230,7 @@ class Config:
         self.rules = []        # (profile, folder)
         self.separate = set()  # profiles that keep their history and memory to themselves
         self.default, self.style, self.base = "", "clean", BASE
+        self.switch, self.switch_left, self.order = False, 10, []   # automatic switching
         with open(CONF, encoding="utf-8") as f:
             for line in f:
                 parts = line.split(None, 2)
@@ -246,6 +257,13 @@ class Config:
                     self.rules.append((name, expand(rest)))
                 elif kind == "separate":
                     self.separate.add(name)
+                elif kind == "switch":
+                    self.switch = name == "on"
+                elif kind == "switch_left" and name.isdigit():
+                    self.switch_left = min(LOW_MAX, max(LOW_MIN, int(name)))
+                elif kind == "order":
+                    self.order = (name + " " + rest).split()
+        self.order = [p for i, p in enumerate(self.order) if p in self.pdir and p not in self.order[:i]]
         if self.default not in self.pdir and self.names:
             self.default = self.names[0]
 
@@ -582,6 +600,117 @@ def usage(p):
     return value(v[0], v[1]), value(v[2], v[3]), reset(v[1]), reset(v[3])
 
 
+# ------------------------------------------------------------------ automatic switching
+
+def low(i, below):
+    """The first limit with less than `below`% left: (label, % left, resets), else None.
+    A limit nothing is known about counts as having room."""
+    for label, used, reset in (("5-hour", i["u5"], i["r5"]), ("weekly", i["uw"], i["rw"])):
+        if used is not None and 100 - used < below:
+            return label, max(0, 100 - used), reset
+    return None
+
+
+def left_now(i):
+    """The smaller of what is left of the two limits, or None when nothing is known."""
+    known = [100 - u for u in (i["u5"], i["uw"]) if u is not None]
+    return max(0, min(known)) if known else None
+
+
+def takeover(cfg, p, chat=False):
+    """Who takes over from p: None when nothing changes (switching is off, p is not in the
+    order, or p still has room); else (next, limit), where next is the first other account
+    in the order that is signed in and below the level, or "" when none is. With chat=True
+    only accounts that share history with p count, since a chat can only move to those."""
+    if not cfg.switch or p not in cfg.order:
+        return None
+    full = low(info(cfg, p), cfg.switch_left)
+    if not full:
+        return None
+    return next_up(cfg, p, chat), full
+
+
+def next_up(cfg, p, chat=False):
+    """The first other account in the order that is signed in and not low, or ""."""
+    for q in cfg.order:
+        if q == p or (chat and (p in cfg.separate or q in cfg.separate)):
+            continue
+        i = info(cfg, q)
+        if i["state"] == "ok" and not low(i, cfg.switch_left):
+            return q
+    return ""
+
+
+def limit_words(p, full):
+    label, left, reset = full
+    when = time.strftime(" (resets %a %H:%M)", time.localtime(reset)) if reset else ""
+    return "'%s' has %d%% left of its %s limit%s" % (p, left, label, when)
+
+
+def uses_limits(args):
+    """True unless these claude arguments only manage Claude (auth, mcp, --version, ...)."""
+    return not any(a in MANAGE for a in args[:1] + [a for a in args if a.startswith("-")])
+
+
+def is_chat(args):
+    """True when these claude arguments start a chat (not -p, auth, mcp, --version, ...)."""
+    return not any(a in NOT_CHAT for a in args[:1] + [a for a in args if a.startswith("-")])
+
+
+RUN_ID = re.compile(r"^[0-9a-f]{32}$")
+SESSION_ID = re.compile(r"^[0-9A-Za-z_-]{1,100}$")
+
+
+def run_file(run_id):
+    """Where the status line notes which chat a watched `claude` run is on."""
+    return os.path.join(CONF_DIR, "runs", run_id)
+
+
+def ask_yes(question):
+    """[Y/n]: Enter means yes."""
+    sys.stderr.write(question + " [Y/n] ")
+    sys.stderr.flush()
+    answer = sys.stdin.readline()
+    return bool(answer) and not answer.strip().lower().startswith("n")
+
+
+def run_chat(cfg, p, args):
+    """Claude on p, watched instead of handed over: when it ends with p over the level and
+    another account in the order has room, Hats offers to carry the same chat on there.
+    Chats are in projects/, which accounts share, so `claude --resume <id>` finds it."""
+    import uuid
+    run_id = uuid.uuid4().hex
+    path = run_file(run_id)
+    try:
+        while True:
+            env = env_for(cfg, p)
+            env["HAT_RUN"] = run_id
+            rc = run(["claude"] + args, env)
+            nxt = takeover(cfg, p, chat=True)
+            if not nxt or not sys.stdin.isatty():
+                return rc
+            q, full = nxt
+            if not q:
+                sys.stderr.write("%shat: %s, and so has every other account in your order.%s\n"
+                                 % (sgr("38;5;%d" % YELLOW), limit_words(p, full), sgr("0")))
+                return rc
+            try:
+                with open(path, encoding="utf-8") as f:
+                    chat = f.read().strip()
+            except OSError:
+                chat = ""
+            sys.stderr.write("%shat: %s.%s\n" % (sgr("38;5;%d" % YELLOW), limit_words(p, full), sgr("0")))
+            if not ask_yes("Continue this chat on '%s'?" % q):
+                return rc
+            sys.stderr.write("hat: continuing on '%s' …\n" % q)
+            p, args = q, (["--resume", chat] if SESSION_ID.match(chat) else ["--continue"])
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
 # ------------------------------------------------------------------ rendering
 
 def label_of(cfg, p, i, pinned=False, wrap=False):
@@ -721,12 +850,13 @@ def confirm(question):
 # ------------------------------------------------------------------ the menu
 
 def read_key():
-    """One keypress: 'up', 'down', 'enter', 'esc', or the character typed."""
+    """One keypress: 'up', 'down', 'left', 'right', 'shift-up', 'shift-down', 'enter',
+    'esc', or the character typed."""
     if IS_WIN:
         import msvcrt
         ch = msvcrt.getwch()
         if ch in ("\x00", "\xe0"):
-            return {"H": "up", "P": "down"}.get(msvcrt.getwch(), "")
+            return {"H": "up", "P": "down", "K": "left", "M": "right"}.get(msvcrt.getwch(), "")
         return {"\r": "enter", "\x1b": "esc", "\x03": "esc", "q": "esc"}.get(ch, ch)
     import select
     import termios
@@ -736,14 +866,17 @@ def read_key():
     try:
         tty.setraw(fd)
         ch = os.read(fd, 1).decode("utf-8", "replace")
-        if ch == "\x1b":
-            while len(ch) < 3 and select.select([fd], [], [], 0.05)[0]:
+        if ch == "\x1b":  # an escape sequence ends with a letter or ~ (at most 6 bytes here)
+            while len(ch) < 6 and select.select([fd], [], [], 0.05)[0]:
                 ch += os.read(fd, 1).decode("utf-8", "replace")
+                if len(ch) > 2 and (ch[-1].isalpha() or ch[-1] == "~"):
+                    break
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
     return {"\x1b[A": "up", "\x1bOA": "up", "k": "up", "\x1b[B": "down", "\x1bOB": "down",
-            "j": "down", "\r": "enter", "\n": "enter", "\x1b": "esc", "\x03": "esc",
-            "q": "esc"}.get(ch, ch)
+            "j": "down", "\x1b[C": "right", "\x1bOC": "right", "\x1b[D": "left", "\x1bOD": "left",
+            "\x1b[1;2A": "shift-up", "\x1b[1;2B": "shift-down", "K": "shift-up", "J": "shift-down",
+            "\r": "enter", "\n": "enter", "\x1b": "esc", "\x03": "esc", "q": "esc"}.get(ch, ch)
 
 
 def menu(cfg):
@@ -786,6 +919,181 @@ def menu(cfg):
         w.write("\x1b[%dA" % height)  # back to the top of the list to redraw it
     say()
     return "auto" if sel == n else cfg.names[sel]
+
+
+# ------------------------------------------------------------------ settings
+
+def save_setting(key, value):
+    """Set or (value "") remove a one-line setting in hats.conf."""
+    if value:
+        edit_conf(set_key=(key, value))
+    else:
+        edit_conf(drop=lambda bits: bits[0] == key)
+
+
+def now_words(cfg):
+    """The settings screen's "Now:" sentence: what `claude` will do here with these settings."""
+    p, _ = cfg.resolve()
+    if not cfg.switch:
+        return "Now: nothing moves. claude uses this folder's account (or the one you pick), as always."
+    if len(cfg.order) < 2:
+        return ("Now: nothing moves yet. Put at least two accounts under Take turns "
+                "(enter picks one up, enter drops it).")
+    if p not in cfg.order:
+        return "Now: claude starts on %s here, which never switches." % p
+    q, full = next_up(cfg, p), low(info(cfg, p), cfg.switch_left)
+    if full and q:
+        return "Now: %s has %d%% left, so claude starts on %s." % (p, full[1], q)
+    if full:
+        return "Now: every account that takes turns is low, so claude stays on %s." % p
+    if not q:
+        return "Now: claude starts on %s. No other account that takes turns has room right now." % p
+    return "Now: claude starts on %s. When it has less than %d%% left, it moves on to %s." % (p, cfg.switch_left, q)
+
+
+def wrap_words(text, width=60):
+    out, line = [], ""
+    for word in text.split():
+        if line and len(line) + 1 + len(word) > width:
+            out.append(line)
+            line = word
+        else:
+            line = (line + " " + word).strip()
+    return out + [line]
+
+
+def settings_lines(cfg, sel=None, carry=None, keys=True):
+    """The settings screen (approved 2026-11-26: sentences, two lists, a live "Now:" line).
+    sel: the item under the cursor ("switch", "level" or an account), None for a printed
+    copy. carry: the account picked up with Enter. Returns the lines and the items the
+    cursor can be on, in order."""
+    dim, off = sgr("2"), sgr("0")
+    others = [p for p in cfg.names if p not in cfg.order]
+    items = ["switch"] + (["level"] + cfg.order + others if cfg.switch else [])
+    fade = (lambda t: t) if cfg.switch else (lambda t: dim + re.sub(r"\x1b\[[0-9;]*m", "", t) + off)
+
+    def mark(item):
+        if item == carry:
+            return " " + sgr("1;38;5;%d" % YELLOW) + "⇅" + off + " "
+        return (" " + sgr("1") + "❯" + off + " ") if item == sel else "   "
+
+    out = [" %sHats · Settings%s%s" % (sgr("1"), off, (" " * 35 + dim + "esc close" + off) if keys else ""), ""]
+    state = sgr("1;38;5;114") + "[ on ]" + off if cfg.switch else dim + "[ off ]" + off
+    out.append("%sMove to another account when one runs low     %s" % (mark("switch"), state))
+    arrows = ("◂ %d%% ▸" if sel == "level" else "%d%%") % cfg.switch_left
+    out.append(mark("level") + fade("Runs low = less than  %s%s%s  left of its 5-hour or weekly limit"
+                                    % (sgr("1"), arrows, off)))
+    out.append("")
+    w = max([len(p) for p in cfg.names] + [35])   # names, padded so "left now" lines up
+
+    def account(p, n):
+        i = info(cfg, p)
+        num = ("%d" % n) if n else " "
+        name = sgr("1;38;5;%d" % cfg.color(p)) + (p.ljust(w) if n else p) + off
+        if not n:
+            note = ""
+        elif i["state"] != "ok":
+            note = sgr("38;5;%d" % RED) + ("not signed in" if i["state"] == "out" else "wrong account") + off \
+                + dim + ", skipped" + off
+        else:
+            left = left_now(i)
+            note = (dim + "no usage yet" + off) if left is None else "%d%%" % left
+            if p in cfg.separate:
+                note += dim + "  separate: a chat can't move here" + off
+        return ("%s  %s  %s   %s" % (mark(p), num, name, fade(note) if note else "")).rstrip()
+
+    out.append(fade("   Take turns, top first".ljust(w + 11) + dim + "left now" + off))
+    for n, p in enumerate(cfg.order, 1):
+        out.append(account(p, n))
+    if not cfg.order:
+        out.append(fade("        " + dim + "(none yet)" + off))
+    out += ["", fade("   Never switch to or from")]
+    for p in others:
+        out.append(account(p, 0))
+    if not others:
+        out.append(fade("        " + dim + "(none)" + off))
+    out.append("")
+    out += ["   " + fade(line) for line in wrap_words(now_words(cfg))]
+    if keys and sel is not None:
+        hint = ("↑↓ move it · enter drop · esc put it back" if carry else
+                "space on/off · ←→ change · enter: pick up an account, ↑↓ move, enter drop")
+        out += ["", " " + dim + hint + off]
+    return out, items
+
+
+def settings_screen(cfg):
+    w, height, sel, carry, before = Out.stream, 0, "switch", None, None
+    w.write("\n")
+    while True:
+        lines, items = settings_lines(cfg, sel, carry)
+        if height:
+            w.write("\x1b[%dA" % height)
+        w.write("\x1b[J" + "".join("\r%s\n" % line for line in lines))
+        w.flush()
+        height = len(lines)
+        key = read_key()
+        if carry:
+            if key in ("up", "down", "shift-up", "shift-down"):
+                seq = cfg.order + [None] + [q for q in cfg.names if q not in cfg.order]
+                k = seq.index(carry)
+                to = k + (-1 if key in ("up", "shift-up") else 1)
+                if 0 <= to < len(seq):
+                    seq[k], seq[to] = seq[to], seq[k]
+                    cfg.order = seq[:seq.index(None)]
+            elif key == "esc":
+                cfg.order, carry = before, None
+            elif key in ("enter", " "):
+                carry = None
+                if cfg.order != before:
+                    save_setting("order", " ".join(cfg.order))
+            continue
+        if key == "esc":
+            break
+        if key in ("up", "down"):
+            k = items.index(sel) if sel in items else 0
+            sel = items[(k + (-1 if key == "up" else 1)) % len(items)]
+        elif sel == "switch" and key in (" ", "enter", "left", "right"):
+            cfg.switch = not cfg.switch
+            save_setting("switch", "on" if cfg.switch else "off")
+        elif sel == "level" and key in (" ", "enter", "left", "right"):
+            n = cfg.switch_left + (-LOW_STEP if key == "left" else LOW_STEP)
+            cfg.switch_left = LOW_MIN if n > LOW_MAX and key != "right" else min(LOW_MAX, max(LOW_MIN, n))
+            save_setting("switch_left", str(cfg.switch_left))
+        elif sel in cfg.pdir and key == "enter":
+            carry, before = sel, list(cfg.order)
+        elif sel in cfg.pdir and key == " ":   # a shortcut: straight to the other list
+            cfg.order = [p for p in cfg.order if p != sel] if sel in cfg.order else cfg.order + [sel]
+            save_setting("order", " ".join(cfg.order))
+    w.write("\n")
+
+
+def cmd_settings(cfg, args, emit):
+    """`hat settings`: automatic switching, when an account counts as low, and which
+    accounts take turns. Interactive in a terminal; for scripts: `hat settings switch
+    on|off`, `level <% left>`, `order <profiles...>`."""
+    if args:
+        what, values = args[0], args[1:]
+        if what == "switch" and values in (["on"], ["off"]):
+            cfg.switch = values[0] == "on"
+            save_setting("switch", values[0])
+        elif what == "level" and len(values) == 1:
+            n = values[0].rstrip("%")
+            if not n.isdigit() or not LOW_MIN <= int(n) <= LOW_MAX:
+                raise Fail("hat: the level is how much of a limit is left, from %d to %d, "
+                           "for example: hat settings level 10" % (LOW_MIN, LOW_MAX))
+            cfg.switch_left = int(n)
+            save_setting("switch_left", str(cfg.switch_left))
+        elif what == "order":
+            for p in values:
+                cfg.dir(p)
+            cfg.order = [p for k, p in enumerate(values) if p not in values[:k]]
+            save_setting("order", " ".join(cfg.order))
+        else:
+            raise Fail("hat: usage: hat settings [switch on|off] [level <%% left, %d-%d>] [order <profile>...]"
+                       % (LOW_MIN, LOW_MAX))
+    elif sys.stdin.isatty() and Out.stream.isatty():
+        return settings_screen(cfg)
+    say("\n".join(settings_lines(cfg, keys=False)[0]))
 
 
 # ------------------------------------------------------------------ commands
@@ -846,6 +1154,7 @@ def cmd_status(cfg, args, emit):
                              "resets_5h": i["r5"], "resets_week": i["rw"]})
         sys.stdout.write(json.dumps({"version": VERSION, "active": cur, "reason": why, "pinned": bool(pin),
                                      "default": cfg.default, "profiles": profiles,
+                                     "switching": {"on": cfg.switch, "left_below": cfg.switch_left, "order": cfg.order},
                                      "rules": [{"profile": p, "folder": d} for p, d in cfg.rules]},
                                     indent=2) + "\n")
         return
@@ -861,6 +1170,12 @@ def cmd_status(cfg, args, emit):
     for p, d in cfg.rules:
         say("    %-10s %s" % (p, d))
     say("    %-10s %s\n" % (cfg.default, "(everywhere else)"))
+    if cfg.switch:
+        say("  Automatic switching: %son%s · moves on below %d%% left · %s  %s(hat settings)%s\n" % (
+            sgr("1"), sgr("0"), cfg.switch_left, " → ".join(cfg.order) or "no accounts take turns yet",
+            sgr("2"), sgr("0")))
+    else:
+        say("  Automatic switching: off  %s(hat settings)%s\n" % (sgr("2"), sgr("0")))
 
 
 def cmd_which(cfg, args, emit):
@@ -984,14 +1299,23 @@ def cmd_style(cfg, args, emit):
 
 
 def cmd_claude(cfg, args, emit):
-    """`claude` starts on the account shown in the prompt."""
+    """`claude` starts on the account shown in the prompt, or, with automatic switching
+    on, on the next account in the order when that one is low."""
     if os.environ.get("CLAUDECODE"):  # inside a Claude Code session: keep its account
         return run(["claude"] + args, dict(os.environ), handover=True)
     p, _ = cfg.resolve()
     if p not in cfg.pdir:
         raise Fail("hat: this terminal is pinned to '%s', which no longer exists. Run: hat auto" % p)
+    nxt = takeover(cfg, p) if uses_limits(args) else None
+    if nxt:
+        q, full = nxt
+        sys.stderr.write("%shat: %s%s.%s\n" % (
+            sgr("38;5;%d" % YELLOW), limit_words(p, full),
+            " → starting on '%s' (automatic switching: hat settings)" % q if q
+            else ", and so has every other account in your order", sgr("0")))
+        p = q or p
     env = env_for(cfg, p)
-    line, i = describe(cfg)
+    line, i = describe(cfg, pin=p if nxt and nxt[0] else None)
     if i["state"] == "wrong":
         raise Fail("hat: not starting Claude: '%s' is signed in as %s, but should be %s.\n"
                    "Sign in again with: hat login %s   (to start anyway: hat run %s)"
@@ -1000,9 +1324,11 @@ def cmd_claude(cfg, args, emit):
         sys.stderr.write(line + "\n")
     for label, used, resets in (("5-hour", i["u5"], i["r5"]), ("weekly", i["uw"], i["rw"])):
         if used is not None and used >= WARN_AT:
-            sys.stderr.write("%shat: '%s' has used %d%% of its %s limit%s.%s\n" % (
-                sgr("38;5;%d" % YELLOW), p, used, label,
+            sys.stderr.write("%shat: '%s' has %d%% left of its %s limit%s.%s\n" % (
+                sgr("38;5;%d" % YELLOW), p, max(0, 100 - used), label,
                 time.strftime(" (resets %a %H:%M)", time.localtime(resets)) if resets else "", sgr("0")))
+    if cfg.switch and p in cfg.order and is_chat(args) and sys.stdin.isatty():
+        return run_chat(cfg, p, args)
     return run(["claude"] + args, env, handover=True)
 
 
@@ -1067,6 +1393,14 @@ def cmd_statusline(cfg, args, emit):
         except OSError:
             pass
 
+    run_id, chat = os.environ.get("HAT_RUN", ""), data.get("session_id")
+    if RUN_ID.match(run_id) and isinstance(chat, str) and SESSION_ID.match(chat):
+        try:
+            os.makedirs(os.path.join(CONF_DIR, "runs"), exist_ok=True)
+            write_atomic(run_file(run_id), chat + "\n")
+        except OSError:
+            pass
+
     bar = "  " + sgr("2") + "│" + sgr("0") + "  "
     if p:
         i = info(cfg, p)
@@ -1083,6 +1417,9 @@ def cmd_statusline(cfg, args, emit):
     nums = [pct(label, v) for label, v in (("context", ctx), ("5h", u5), ("week", uw)) if v is not None]
     if nums:
         out += bar + " · ".join(nums)
+    nxt = takeover(cfg, p, chat=True) if p and RUN_ID.match(run_id) else None
+    if nxt and nxt[0]:
+        out += bar + "%s/exit → continue on %s%s" % (sgr("38;5;%d" % YELLOW), nxt[0], sgr("0"))
     sys.stdout.write(out)
 
 
@@ -1286,7 +1623,7 @@ COMMANDS = {
     "help": cmd_help, "-h": cmd_help, "--help": cmd_help,
     "prompt": cmd_prompt, "statusline": cmd_statusline, "context": cmd_context,
     "doctor": cmd_doctor, "update": cmd_update, "export": cmd_export, "import": cmd_import,
-    "code": cmd_code, "version": cmd_version, "--version": cmd_version,
+    "code": cmd_code, "settings": cmd_settings, "version": cmd_version, "--version": cmd_version,
 }
 
 
