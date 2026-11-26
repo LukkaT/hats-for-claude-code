@@ -46,6 +46,12 @@ GREEN, BLUE, YELLOW, RED = (138, 226, 52), (114, 159, 207), (255, 215, 95), (255
 ACCOUNT = {"personal": (135, 215, 135), "work": (95, 175, 255), "client-a": (215, 135, 215)}
 
 TYPE_MS, BLINK_MS, FADE_FRAMES = 55, 530, 5
+FADE_MS, DIP = 35, 1.0   # ms per fade frame; how far a whole-screen change dims (1.0: to the background)
+
+
+def ease(t):
+    """Slow at the start and the end of a fade, so it looks smooth."""
+    return t * t * (3 - 2 * t)
 
 # A line is a list of segments: (text, colour, bold, highlighted). A highlighted
 # segment gets an outline, to draw the eye to what just changed.
@@ -163,9 +169,9 @@ class Film:
 
         if whole:
             for k in range(1, FADE_FRAMES + 1):
-                self.add(frame(before, blank, k / FADE_FRAMES), 35)
+                self.add(frame(before, blank, DIP * ease(k / FADE_FRAMES)), FADE_MS)
             for k in range(1, FADE_FRAMES + 1):
-                self.add(frame(blank, after, k / FADE_FRAMES), 35)
+                self.add(frame(blank, after, 1 - DIP * (1 - ease(k / FADE_FRAMES))), FADE_MS)
         else:
             for k in range(1, FADE_FRAMES + 1):
                 self.add(frame(before, after, k / (FADE_FRAMES + 1)), 40)
