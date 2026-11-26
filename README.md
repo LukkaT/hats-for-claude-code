@@ -98,13 +98,14 @@ That's it. `cd ~/code/acme` and your prompt changes to `work`.
 
 | Command | What it does |
 | --- | --- |
-| `hat settings` | Turns **automatic switching** on or off, sets when an account counts as low (for example less than 10% left), and chooses which accounts **take turns**. The full guide: [Automatic switching](docs/settings.md). |
+| `hat settings` | Turns **automatic switching** on or off, sets when an account counts as low (for example less than 10% left), and chooses which accounts **take turns**. The full guide, with a [step-by-step walkthrough](docs/settings.md#step-by-step): [Automatic switching](docs/settings.md). |
 | `hat settings switch on` / `off`, `level 10`, `order personal work` | The same, without the screen. |
 
 In short: when the account in use has less than that much left of its 5-hour or weekly
 limit, `claude` starts on the next account under **Take turns**. A chat that is
-already running continues there after `/exit`, once you say yes. Accounts under
-**Never switch** are never switched to or from.
+already running moves there by itself as soon as the current task finishes; if the
+limit runs out in the middle of a task, the task continues on the next account.
+Accounts under **Never switch** are never switched to or from.
 
 **Running things**
 

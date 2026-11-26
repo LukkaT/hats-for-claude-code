@@ -10,16 +10,21 @@ the latest.
   5-hour or weekly limit) and which accounts take turns, in which order.
   - `claude` starts on the next account that takes turns when the one in use is low,
     and says so.
-  - During a chat, the status line shows `/exit → continue on <account>`. After
-    `/exit`, Hats asks before continuing the same chat there with `claude --resume`.
+  - A running chat moves by itself: when a task finishes and the account is low, Hats
+    reopens the same chat on the next account (`claude --resume`). If the limit runs
+    out in the middle of a task, the task continues there ("Continue where you
+    stopped"). The status line says `low: moves to <account> after this task`.
+  - The installer adds two Hats hooks to Claude Code's settings for this (`Stop`,
+    `StopFailure`); they do nothing while switching is off.
   - Accounts under "Never switch to or from" are never switched to or from.
   - A "Now:" line on the screen says in plain words what will happen.
   - `hat settings switch on|off`, `level <% left>` and `order <accounts>` do the same
     from scripts.
 - `hat status` says whether switching is on, and `hat status --json` has `switching`.
 - The warning near a limit says how much is left ("has 7% left"), like `hat status`.
-- Guide: `docs/settings.md`. Animation: `docs/settings.gif`
-  (`docs/make_settings_demo.py`).
+- Guide: `docs/settings.md`, with a click-to-open walkthrough of every step
+  (`docs/settings/step-N.png`). Overview animation: `docs/settings.gif`. Both are
+  drawn by `docs/make_settings_demo.py`.
 
 ## 1.1.0 — 2026-11-25
 

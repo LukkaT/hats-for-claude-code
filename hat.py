@@ -674,18 +674,107 @@ def ask_yes(question):
     return bool(answer) and not answer.strip().lower().startswith("n")
 
 
+CONTINUE = "Continue where you stopped: the previous account reached its usage limit."
+
+
+def note_chat(run_id, chat):
+    """Remember which chat a watched run is on (the status line and the hooks call this)."""
+    if RUN_ID.match(run_id) and isinstance(chat, str) and SESSION_ID.match(chat):
+        try:
+            os.makedirs(os.path.join(CONF_DIR, "runs"), exist_ok=True)
+            write_atomic(run_file(run_id), chat + "\n")
+        except OSError:
+            pass
+
+
+def watch(cmd, env, flag):
+    """Run Claude and wait for it, ignoring Ctrl-C (Claude gets it). When a hook leaves a
+    switch note at `flag`, end Claude (it exits cleanly on SIGTERM) and return the note.
+    Returns (exit code, note or None)."""
+    import shutil
+    import signal
+    import subprocess
+    exe = shutil.which(cmd[0], path=env.get("PATH"))
+    if not exe:
+        raise Fail("hat: '%s' not found on PATH" % cmd[0])
+    old = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        child = subprocess.Popen([exe] + cmd[1:], env=env)
+        while True:
+            try:
+                return child.wait(timeout=0.25), None
+            except subprocess.TimeoutExpired:
+                pass
+            move = read_json(flag) if os.path.exists(flag) else None
+            if move is not None:
+                try:
+                    os.remove(flag)
+                except OSError:
+                    pass
+                child.terminate()
+                try:
+                    child.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    child.wait()
+                return 0, move
+    finally:
+        signal.signal(signal.SIGINT, old)
+
+
+def terminal_state():
+    try:
+        import termios
+        return termios.tcgetattr(sys.stdin.fileno())
+    except Exception:
+        return None
+
+
+def restore_terminal(state):
+    """After Claude was ended: the terminal as it was before (Claude also resets it)."""
+    if state is not None:
+        try:
+            import termios
+            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, state)
+        except Exception:
+            pass
+    sys.stderr.write("\x1b[?25h")
+
+
 def run_chat(cfg, p, args):
-    """Claude on p, watched instead of handed over: when it ends with p over the level and
-    another account in the order has room, Hats offers to carry the same chat on there.
-    Chats are in projects/, which accounts share, so `claude --resume <id>` finds it."""
+    """Claude on p, watched instead of handed over. Chats are in projects/, which accounts
+    share, so `claude --resume <id>` finds a chat on another account.
+    - When a task ends and p is low (Stop hook, `hat turn-end`), or Claude stops because
+      the limit ran out (StopFailure hook, `hat turn-failed`), the hook leaves a note and
+      Hats moves the chat on by itself; after a run-out limit it also says "continue".
+    - Without the hooks, when Claude exits with p low, Hats asks first."""
     import uuid
     run_id = uuid.uuid4().hex
-    path = run_file(run_id)
+    path, flag = run_file(run_id), run_file(run_id) + ".switch"
+    saved = terminal_state()
     try:
         while True:
             env = env_for(cfg, p)
             env["HAT_RUN"] = run_id
-            rc = run(["claude"] + args, env)
+            rc, move = watch(["claude"] + args, env, flag)
+            cfg = Config()   # settings may have changed during the chat
+            if move:
+                restore_terminal(saved)
+                q, chat = move.get("to"), move.get("chat") or ""
+                if q not in cfg.pdir:
+                    return rc
+                resume = ["--resume", chat] if SESSION_ID.match(chat) else ["--continue"]
+                if move.get("why") == "limit":
+                    why = "'%s' reached its usage limit → continuing this task on '%s' …" % (p, q)
+                    args = resume + [CONTINUE]
+                else:
+                    full = low(info(cfg, p), cfg.switch_left)
+                    why = "%s → this chat continues on '%s' …" % (
+                        limit_words(p, full) if full else "'%s' is low" % p, q)
+                    args = resume
+                sys.stderr.write("\n%shat: %s%s\n" % (sgr("38;5;%d" % YELLOW), why, sgr("0")))
+                p = q
+                continue
             nxt = takeover(cfg, p, chat=True)
             if not nxt or not sys.stdin.isatty():
                 return rc
@@ -705,10 +794,69 @@ def run_chat(cfg, p, args):
             sys.stderr.write("hat: continuing on '%s' …\n" % q)
             p, args = q, (["--resume", chat] if SESSION_ID.match(chat) else ["--continue"])
     finally:
+        for f in (path, flag):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+
+
+def hook_input():
+    try:
+        data = json.load(sys.stdin)
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def leave_switch_note(run_id, to, chat, why):
+    try:
+        os.makedirs(os.path.join(CONF_DIR, "runs"), exist_ok=True)
+        write_atomic(run_file(run_id) + ".switch", json.dumps({"to": to, "chat": chat, "why": why}))
+    except OSError:
+        pass
+
+
+def quiet(fn):
+    """For Claude Code hooks: never print or fail inside Claude's screen."""
+    def run_quietly(cfg, args, emit):
         try:
-            os.remove(path)
-        except OSError:
+            fn(cfg, args, emit)
+        except Exception:
             pass
+    return run_quietly
+
+
+@quiet
+def cmd_turn_end(cfg, args, emit):
+    """Claude Code's Stop hook: a task has finished. In a watched chat on an account that
+    is now low, leave a note so Hats moves the chat to the next account. Prints nothing."""
+    data, run_id = hook_input(), os.environ.get("HAT_RUN", "")
+    p = cfg.profile_for_dir(os.environ.get("CLAUDE_CONFIG_DIR") or "native")
+    chat = data.get("session_id")
+    if not RUN_ID.match(run_id) or not p or data.get("background_tasks"):
+        return  # not watched, or a background task would be cut off: wait for a later stop
+    note_chat(run_id, chat)
+    nxt = takeover(cfg, p, chat=True)
+    if nxt and nxt[0]:
+        leave_switch_note(run_id, nxt[0], chat if isinstance(chat, str) else "", "low")
+
+
+@quiet
+def cmd_turn_failed(cfg, args, emit):
+    """Claude Code's StopFailure hook: a turn ended with an API error. When it is the
+    usage limit, move the chat on and let the task continue there. Prints nothing."""
+    data, run_id = hook_input(), os.environ.get("HAT_RUN", "")
+    p = cfg.profile_for_dir(os.environ.get("CLAUDE_CONFIG_DIR") or "native")
+    chat = data.get("session_id")
+    if not RUN_ID.match(run_id) or not p or data.get("error") != "rate_limit":
+        return
+    if not cfg.switch or p not in cfg.order:
+        return
+    note_chat(run_id, chat)
+    q = next_up(cfg, p, chat=True)
+    if q:
+        leave_switch_note(run_id, q, chat if isinstance(chat, str) else "", "limit")
 
 
 # ------------------------------------------------------------------ rendering
@@ -1393,13 +1541,8 @@ def cmd_statusline(cfg, args, emit):
         except OSError:
             pass
 
-    run_id, chat = os.environ.get("HAT_RUN", ""), data.get("session_id")
-    if RUN_ID.match(run_id) and isinstance(chat, str) and SESSION_ID.match(chat):
-        try:
-            os.makedirs(os.path.join(CONF_DIR, "runs"), exist_ok=True)
-            write_atomic(run_file(run_id), chat + "\n")
-        except OSError:
-            pass
+    run_id = os.environ.get("HAT_RUN", "")
+    note_chat(run_id, data.get("session_id"))
 
     bar = "  " + sgr("2") + "│" + sgr("0") + "  "
     if p:
@@ -1419,7 +1562,7 @@ def cmd_statusline(cfg, args, emit):
         out += bar + " · ".join(nums)
     nxt = takeover(cfg, p, chat=True) if p and RUN_ID.match(run_id) else None
     if nxt and nxt[0]:
-        out += bar + "%s/exit → continue on %s%s" % (sgr("38;5;%d" % YELLOW), nxt[0], sgr("0"))
+        out += bar + "%slow: moves to %s after this task%s" % (sgr("38;5;%d" % YELLOW), nxt[0], sgr("0"))
     sys.stdout.write(out)
 
 
@@ -1623,7 +1766,7 @@ COMMANDS = {
     "help": cmd_help, "-h": cmd_help, "--help": cmd_help,
     "prompt": cmd_prompt, "statusline": cmd_statusline, "context": cmd_context,
     "doctor": cmd_doctor, "update": cmd_update, "export": cmd_export, "import": cmd_import,
-    "code": cmd_code, "settings": cmd_settings, "version": cmd_version, "--version": cmd_version,
+    "code": cmd_code, "settings": cmd_settings, "turn-end": cmd_turn_end, "turn-failed": cmd_turn_failed, "version": cmd_version, "--version": cmd_version,
 }
 
 

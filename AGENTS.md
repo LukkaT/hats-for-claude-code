@@ -19,7 +19,8 @@ Automatic switching (1.2.0) is allowed only on these terms:
 - the owner turns it on in `hat settings`;
 - it moves only between accounts the owner put in the order;
 - it always says what it did;
-- it asks before moving a chat that is already running.
+- it moves a running chat only when a task has finished, or when the limit has really
+  run out (then the task continues on the next account); it never cuts a task short.
 
 An account outside the order is never switched to or from.
 
@@ -32,7 +33,7 @@ An account outside the order is never switched to or from.
 | `install.py` | Install, update, uninstall, purge on every platform. Imports `hat.py` for safe folder removal. |
 | `tests/test_hat.py` | Tests. Run them before and after every change. |
 | `docs/make_demo.py` | Draws `docs/demo.gif` (needs Pillow; not a Hats dependency). |
-| `docs/make_settings_demo.py` | Draws `docs/settings.gif`, the automatic-switching walkthrough, with the same look. |
+| `docs/make_settings_demo.py` | Draws `docs/settings.gif` (the automatic-switching overview) and `docs/settings/step-N.png` (the step-by-step pictures in `settings.md`), with the same look. |
 | `docs/settings.md` | The full guide to `hat settings` and automatic switching. Keep it in step with the code. |
 | `examples/` | Example settings file and export. |
 | `CHANGELOG.md` | One entry per version. |
@@ -63,8 +64,16 @@ An account outside the order is never switched to or from.
     waits for Claude (Ctrl-C ignored, as on Windows) instead of `execve`, and sets
     `HAT_RUN`.
   - The status line writes the chat's `session_id` to `runs/<HAT_RUN>`.
-  - After Claude exits with the profile low, Hats asks, then runs `claude --resume <id>` on
-    the next profile. Chats are in the shared `projects/`; a `--separate` profile
+  - Claude Code's `Stop` hook runs `hat.py turn-end` when a task finishes. In a watched
+    chat on a low profile it writes `runs/<HAT_RUN>.switch`. Hats sees the note, ends
+    Claude with SIGTERM (it exits cleanly), restores the terminal and runs
+    `claude --resume <id>` on the next profile.
+  - The `StopFailure` hook runs `hat.py turn-failed`. With `error: rate_limit` it does
+    the same, and the resumed chat gets "Continue where you stopped".
+  - Hook commands print nothing and never fail (`quiet`). No switch happens while
+    background tasks are running.
+  - Without the hooks, after Claude exits with the profile low, Hats asks, then runs
+    `claude --resume <id>` on the next profile. Chats are in the shared `projects/`; a `--separate` profile
     can't take part.
 - **Profile resolution** (`Config.resolve`): `HAT_PIN` (a pin in this terminal) → the
   longest matching `dir` rule → `default`.
@@ -90,8 +99,9 @@ These protect other people's computers. Each has a test; keep it that way.
 5. **`settings.json`:**
    - keep its indent and non-ASCII text;
    - leave it alone if it isn't valid JSON;
-   - only ever add or remove Hats's own `statusLine` and its own `SessionStart` entry
-     (`is_ours`, `is_our_context`).
+   - only ever add or remove Hats's own `statusLine` and its own hook entries
+     (`OUR_HOOKS` in `install.py`: `SessionStart`, `Stop`, `StopFailure`; see `is_ours`,
+     `is_our_hook`).
 6. **`claude` keeps working when Hats is broken.** Hooks fall back to the plain command
    when Python or `hat.py` is missing. Unexpected errors print how to bypass Hats.
 7. **Only manage folders Hats created.** Links are made only inside
@@ -137,8 +147,11 @@ Treat these as unverified and ask for reports:
 - macOS (Keychain-based login detection);
 - Windows (junctions, hard links, PowerShell profiles, `msvcrt` key reading);
 - `hat code` with real editors.
-- carrying a chat over with real Claude Code (`claude --resume <id>` on another
-  profile, `session_id` in the status-line input).
+- a real usage limit running out: that Claude Code reports it to `StopFailure` as
+  `rate_limit`;
+- the automatic move after a finished task with real Claude Code, end to end.
+  Confirmed live on 2026-11-26: `claude --resume <id>` on another profile (after
+  `/exit`), and that Claude exits cleanly on SIGTERM.
 
 ## Adding a command
 

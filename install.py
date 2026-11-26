@@ -9,8 +9,9 @@
 What install touches:
   ~/.config/hats/                          the tool (hat.py and one hook per shell)
   your shell start-up file(s)             one line each, ending in "# hats: Claude Code accounts"
-  ~/.claude/settings.json                 "statusLine", only if you have none yet, and one
-                                          SessionStart hook that tells Claude its account
+  ~/.claude/settings.json                 "statusLine", only if you have none yet, a
+                                          SessionStart hook that tells Claude its account, and
+                                          Stop / StopFailure hooks for automatic switching
 """
 
 import json
@@ -49,6 +50,10 @@ def fwd(p):
 PY = fwd(sys.executable)
 STATUS_CMD = '"%s" "%s/hat.py" statusline' % (PY, fwd(DEST))
 CONTEXT_CMD = '"%s" "%s/hat.py" context' % (PY, fwd(DEST))
+
+
+def hook_cmd(command):
+    return '"%s" "%s/hat.py" %s' % (PY, fwd(DEST), command)
 
 
 # ------------------------------------------------------------------ which files
@@ -214,38 +219,55 @@ def is_ours(cmd):
     return cmd.rstrip().endswith('hat.py" statusline') or cmd.rstrip().endswith("hat/statusline.sh")
 
 
-def is_our_context(entry):
-    """A SessionStart matcher group that holds only the Hats context hook."""
+# Hats's own hooks in settings.json: event -> the hat.py command it runs.
+OUR_HOOKS = {"SessionStart": "context",      # tells Claude which account it runs on
+             "Stop": "turn-end",             # a task finished: move a low chat on (switching)
+             "StopFailure": "turn-failed"}   # the limit ran out: move on and continue
+
+
+def is_our_hook(entry, command):
+    """A matcher group that holds only the Hats hook running `hat.py <command>`."""
     hooks = entry.get("hooks") if isinstance(entry, dict) else None
     return (isinstance(hooks, list) and len(hooks) == 1 and isinstance(hooks[0], dict)
-            and str(hooks[0].get("command", "")).rstrip().endswith('hat.py" context'))
+            and str(hooks[0].get("command", "")).rstrip().endswith('hat.py" ' + command))
+
+
+def is_our_context(entry):
+    """A SessionStart matcher group that holds only the Hats context hook."""
+    return is_our_hook(entry, "context")
 
 
 def without_context(data):
-    """settings with the Hats SessionStart hook taken out; containers it emptied go too."""
+    """settings with every Hats hook taken out; containers they emptied go too."""
     hooks = data.get("hooks")
-    if not isinstance(hooks, dict) or not isinstance(hooks.get("SessionStart"), list):
+    if not isinstance(hooks, dict):
         return data, False
-    kept = [e for e in hooks["SessionStart"] if not is_our_context(e)]
-    if len(kept) == len(hooks["SessionStart"]):
-        return data, False
-    if kept:
-        hooks["SessionStart"] = kept
-    else:
-        del hooks["SessionStart"]
-        if not hooks:
-            del data["hooks"]
-    return data, True
+    removed = False
+    for event, command in OUR_HOOKS.items():
+        if not isinstance(hooks.get(event), list):
+            continue
+        kept = [e for e in hooks[event] if not is_our_hook(e, command)]
+        if len(kept) == len(hooks[event]):
+            continue
+        removed = True
+        if kept:
+            hooks[event] = kept
+        else:
+            del hooks[event]
+    if removed and not hooks:
+        del data["hooks"]
+    return data, removed
 
 
 def with_context(data):
-    """settings with the Hats SessionStart hook (replacing an older one of ours)."""
+    """settings with the Hats hooks (replacing older ones of ours)."""
     data, _ = without_context(data)
     hooks = data.setdefault("hooks", {})
-    if not isinstance(hooks, dict):
+    if not isinstance(hooks, dict) or any(not isinstance(hooks.get(e, []), list) for e in OUR_HOOKS):
         return data, False
-    hooks.setdefault("SessionStart", []).append(
-        {"hooks": [{"type": "command", "command": CONTEXT_CMD, "timeout": 10}]})
+    for event, command in OUR_HOOKS.items():
+        hooks.setdefault(event, []).append(
+            {"hooks": [{"type": "command", "command": hook_cmd(command), "timeout": 10}]})
     return data, True
 
 
@@ -294,7 +316,7 @@ def install(shells):
                 if os.path.exists(SETTINGS) and not os.path.exists(SETTINGS + ".pre-hats.bak"):
                     shutil.copy2(SETTINGS, SETTINGS + ".pre-hats.bak")
                 write_settings(data, indent)
-                say("Claude now starts each session knowing which account it runs on")
+                say("added the Hats hooks to %s (the account note, and automatic switching)" % SETTINGS)
             except OSError as e:
                 say("could not change %s (%s); the status line and account hook are optional."
                     % (SETTINGS, e.strerror))
@@ -353,9 +375,9 @@ def uninstall(purge):
         if changed or removed:
             try:
                 write_settings(data, indent)
-                say("removed the status line and account hook from %s" % SETTINGS)
+                say("removed the status line and the Hats hooks from %s" % SETTINGS)
             except OSError as e:
-                say("could not change %s (%s). Remove the Hats statusLine and SessionStart hook yourself."
+                say("could not change %s (%s). Remove the Hats statusLine and hooks (hat.py) yourself."
                     % (SETTINGS, e.strerror))
 
     for f in FILES + OLD_FILES + ["install.json"]:

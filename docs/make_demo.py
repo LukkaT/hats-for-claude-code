@@ -31,6 +31,7 @@ def font(name, size):
 SIZE = 18
 REG, BOLD = font("DejaVuSansMono.ttf", SIZE), font("DejaVuSansMono-Bold.ttf", SIZE)
 CAP_FONT, STEP_FONT = font("DejaVuSans-Bold.ttf", 19), font("DejaVuSans-Bold.ttf", 15)
+NOTE_FONT, KEY_FONT = font("DejaVuSans-Bold.ttf", 15), font("DejaVuSansMono-Bold.ttf", 17)
 CW = REG.getlength("M")
 LH = 27
 COLS, ROWS = 92, 15
@@ -62,12 +63,19 @@ def prompt(account, path, pinned=False, hl=False):
 RULE_LINE = [seg("\x00rule")]
 
 
+def note(text):
+    """An explanation drawn after the line's text, in the caption colours, so it never
+    looks like part of the terminal."""
+    return seg("\x00note" + text)
+
+
 class Film:
     """Collects frames: draws the screen, and handles typing, blinking and fades."""
 
     def __init__(self):
         self.lines, self.title, self.caption, self.step = [], "", "", ""
         self.cursor = True
+        self.key = None      # a key shown as a badge while it is "pressed"
         self.frames = []
 
     def render(self, cursor_on=True):
@@ -84,6 +92,14 @@ class Film:
                 if text == "\x00rule":
                     d.line([PAD, y + LH // 2, W - PAD, y + LH // 2], fill=RULE, width=1)
                     continue
+                if text.startswith("\x00note"):
+                    words = text[5:]
+                    nx = x + (14 if x > PAD + CW * 8 else 0)
+                    tw = NOTE_FONT.getlength(words)
+                    d.rounded_rectangle([nx, y - 1, nx + tw + 16, y + LH - 5], 11, fill=STEP_BG)
+                    d.text((nx + 8, y + 3), words, font=NOTE_FONT, fill=CAPTION_BG)
+                    x = nx + tw + 16
+                    continue
                 f = BOLD if bold else REG
                 width = f.getlength(text)
                 if hl:
@@ -94,6 +110,12 @@ class Film:
                 d.rectangle([x + 1, y + 2, x + CW - 1, y + LH - 5], fill=FG)
             y += LH
         top = H - CAP_H
+        if self.key:
+            kw = KEY_FONT.getlength(self.key) + 36
+            kx, ky = W - PAD - kw, top - 58
+            d.rounded_rectangle([kx, ky + 4, kx + kw, ky + 46], 9, fill=(14, 15, 16))
+            d.rounded_rectangle([kx, ky, kx + kw, ky + 42], 9, fill=(68, 72, 76), outline=(150, 155, 152), width=2)
+            d.text((kx + 18, ky + 10), self.key, font=KEY_FONT, fill=CAPTION_FG)
         d.rectangle([0, top, W, H], fill=CAPTION_BG)
         x = PAD
         if self.step:

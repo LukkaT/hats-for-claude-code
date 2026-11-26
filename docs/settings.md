@@ -6,6 +6,7 @@ and never without telling you.** It is off until you turn it on.
 
 ![hat settings: turn switching on, choose when an account is low, choose which accounts take turns; then a chat continues on the next account](settings.gif)
 
+- [Step by step](#step-by-step), one picture per step
 - [In one minute](#in-one-minute)
 - [Setting it up](#setting-it-up)
 - [The screen, line by line](#the-screen-line-by-line)
@@ -18,6 +19,109 @@ and never without telling you.** It is off until you turn it on.
 - [Without the screen](#without-the-screen)
 - [Questions](#questions)
 
+## Step by step
+
+Open one step at a time. Each picture shows the key you press (bottom right) and, in blue, what changed.
+
+<details open>
+<summary><b>Step 1 of 9: Open the settings</b></summary>
+
+![Step 1: Open the settings](settings/step-1.png)
+
+**You press:** Type `hat settings` and press **Enter**.
+
+**What happens:** The settings open. The first line says **[ off ]**: while it's off, nothing ever moves. Every folder keeps its own account, as before.
+
+</details>
+
+<details>
+<summary><b>Step 2 of 9: Turn it on</b></summary>
+
+![Step 2: Turn it on](settings/step-2.png)
+
+**You press:** **Space** on the first line.
+
+**What happens:** It says **[ on ]**. Nothing moves yet, though: you still need to choose which accounts take turns (step 4).
+
+</details>
+
+<details>
+<summary><b>Step 3 of 9: Choose when an account counts as low</b></summary>
+
+![Step 3: Choose when an account counts as low](settings/step-3.png)
+
+**You press:** **↓** to the second line, then **←** or **→**.
+
+**What happens:** The number changes in steps of 5 (from 5% to 50%). With 15%, an account is **low** as soon as **either** of its limits, the 5-hour one or the weekly one, has less than 15% left.
+
+</details>
+
+<details>
+<summary><b>Step 4 of 9: Choose who takes turns</b></summary>
+
+![Step 4: Choose who takes turns](settings/step-4.png)
+
+**You press:** **↓** to an account under *Never switch to or from*. **Enter** picks it up (⇅), **↑** carries it into *Take turns*, **Enter** puts it down.
+
+**What happens:** The account now takes turns. The first one in the list is used first. Do the same for every account that may take over; the order is the order you put them in, and you can carry an account up or down again at any time.
+
+</details>
+
+<details>
+<summary><b>Step 5 of 9: Leave out accounts that must not switch</b></summary>
+
+![Step 5: Leave out accounts that must not switch](settings/step-5.png)
+
+**You press:** Nothing: just don't move them.
+
+**What happens:** Accounts left under **Never switch to or from** (here `client-a`) are never used for someone else's work, and work started on them never moves away. Use this for accounts of employers or clients who want their work on their own access.
+
+</details>
+
+<details>
+<summary><b>Step 6 of 9: Read the Now line</b></summary>
+
+![Step 6: Read the Now line](settings/step-6.png)
+
+**You press:** Nothing: it updates by itself.
+
+**What happens:** The **Now:** line says in plain words what `claude` will do in this terminal with these settings. Here: it starts on personal, and moves on to work when personal has less than 15% left. Press **Esc** to close; every change is already saved.
+
+</details>
+
+<details>
+<summary><b>Step 7 of 9: Later, in a chat: the account gets low</b></summary>
+
+![Step 7: Later, in a chat: the account gets low](settings/step-7.png)
+
+**You press:** Nothing: keep working.
+
+**What happens:** Claude's status line shows `low: moves to work after this task`. Claude keeps working on the current task as usual. Nothing is cut off.
+
+</details>
+
+<details>
+<summary><b>Step 8 of 9: The task finishes: the chat moves by itself</b></summary>
+
+![Step 8: The task finishes: the chat moves by itself](settings/step-8.png)
+
+**You press:** Nothing. No `/exit`, no question.
+
+**What happens:** As soon as Claude has finished the task, Hats closes Claude and says `hat: 'personal' has 8% left of its 5-hour limit → this chat continues on 'work' …`. If the limit had run out **in the middle** of the task instead, the task would continue on work by itself.
+
+</details>
+
+<details>
+<summary><b>Step 9 of 9: The same chat, now on work</b></summary>
+
+![Step 9: The same chat, now on work](settings/step-9.png)
+
+**You press:** Type your next message as usual.
+
+**What happens:** Claude is open again with **the same chat**: everything said so far is still there. The status line now shows **work**. If work gets low later, the same happens again with the next account.
+
+</details>
+
 ## In one minute
 
 1. You put accounts in a list called **Take turns**, top first. Every other account
@@ -26,12 +130,12 @@ and never without telling you.** It is off until you turn it on.
    its 5-hour or weekly limit.
 3. When you type `claude` and the account for this folder is low, Claude starts on
    the next account in Take turns instead, and Hats says so.
-4. When an account gets low **during** a chat, Claude's status line says
-   `/exit → continue on work`. After `/exit`, Hats asks
-   `Continue this chat on 'work'? [Y/n]`. If you say yes, the same chat continues there.
+4. When an account gets low **during** a chat, the same chat moves to the next account
+   by itself **as soon as the current task finishes**. If the limit runs out in the
+   middle of a task, the task continues on the next account.
 
-Nothing changes in the middle of a reply. A chat only moves after you leave it and
-say yes.
+Nothing is cut off in the middle of a task. A chat moves when a task has finished, or
+when the account really can't go on.
 
 ## Setting it up
 
@@ -139,34 +243,69 @@ account shown in your prompt.
 
 ### During a chat
 
-Claude Code can't change account in the middle of a chat, so Hats hands the chat over
-between two runs of Claude:
+Claude Code can't change account while it runs, so Hats moves the chat **between two
+runs** of Claude: it closes Claude and opens the same chat again on the next account.
+It never does that in the middle of a task.
+
+**When a task finishes and the account is low**, it moves by itself:
 
 1. While you work, Claude's status line shows the numbers. Once the account is low,
-   it adds `/exit → continue on work`. This line only appears in a chat Hats is
-   watching (see below).
-2. You type `/exit` when it suits you, for example after the current reply. Nothing
-   moves before that. If you keep going, Claude keeps using this account until its
-   limit really runs out.
-3. Hats asks: `Continue this chat on 'work'? [Y/n]`
-   - **Enter** or **y**: Hats starts `claude --resume <this chat>` on `work`. The
-     same conversation, with everything said so far, continues on the other account.
-   - **n**: nothing happens. You stay in the terminal, and the chat is still on
-     personal for later.
-4. If work gets low later, the same thing happens again from work to the next account.
+   it adds `low: moves to work after this task`.
+2. Claude finishes what it is doing (the reply, the edits, the tests), as usual.
+3. Right then, Hats closes Claude and says:
 
-A chat can move because all accounts share their history (the `projects/` folder,
-see [How it works](how-it-works.md#what-is-shared)). Two things don't carry over:
+   ```
+   hat: 'personal' has 8% left of its 5-hour limit → this chat continues on 'work' …
+   ```
 
-- **`--separate` accounts.** They keep their history to themselves, so a chat can't
-  move to or from them. They can still take over when Claude **starts**.
-- **Options you started Claude with** (such as `--model`). The continued chat starts
-  with Claude's defaults.
+4. Claude opens again with **the same chat** (`claude --resume`). Everything said so
+   far is there, and the status line now shows **work**. You type your next message
+   as usual.
+
+**When the limit runs out in the middle of a task**, for example during a long task
+with little left, or when the weekly limit runs out:
+
+1. Claude can't send its next request, and stops with a usage-limit message. Nothing
+   is half-done: a command that was running has finished, and each file edit is
+   either complete or not made.
+2. Hats reopens the same chat on the next account and sends, for you:
+   `Continue where you stopped: the previous account reached its usage limit.`
+3. Claude reads the chat so far and carries on with the task.
+
+```
+hat: 'personal' reached its usage limit → continuing this task on 'work' …
+```
+
+**Good to know**
+
+- **Same chat, new account.** A chat can move because all accounts share their history
+  (the `projects/` folder, see [How it works](how-it-works.md#what-is-shared)). The
+  first message on the new account reads the whole chat once, so it uses a little
+  more of that account than usual.
+- **`--separate` accounts** keep their history to themselves, so a chat can't move to
+  or from them. They can still take over when Claude **starts**.
+- **Options you started Claude with** (such as `--model`) aren't repeated. The
+  continued chat starts with Claude's defaults.
+- **Background tasks.** If Claude has something running in the background (for example
+  a dev server it started), Hats doesn't close it after that task. It waits for a
+  later task that ends with nothing running.
+- **Typing quickly.** The move happens about a second after the task finishes. Text
+  you had started typing in that second isn't carried over.
+- **Over and over.** If work gets low later, the same happens again from work to the
+  next account.
+- **If the hooks are missing** (for example, an older install, or your own
+  `settings.json` that Hats left alone), nothing moves by itself. Then, after you
+  `/exit`, Hats asks `Continue this chat on 'work'? [Y/n]` instead.
 
 **Watched chats.** For a chat on an account under Take turns, Hats stays running in
-the background instead of handing over to Claude completely, so it can ask after
-`/exit`. Ctrl-C still goes to Claude. Chats on other accounts, and everything when
-switching is off, work exactly as before.
+the background instead of handing over to Claude completely, so it can move the chat.
+Ctrl-C still goes to Claude. Chats on other accounts, and everything when switching
+is off, work exactly as before.
+
+**How it knows.** The installer adds two small Hats hooks to Claude Code's settings:
+one runs when a task finishes (`Stop`), one when a turn ends with an error
+(`StopFailure`). They print nothing, and do nothing unless this chat is one Hats is
+watching.
 
 ## When it never happens
 
@@ -225,7 +364,8 @@ order personal work
 - Is the account in use under **Take turns**? The prompt shows which one it is.
 - Is it really low? Its **left now** may be old ([why](#what-low-means-exactly)).
 - Does another account in Take turns have room and is it signed in?
-- For a chat: did you leave with `/exit`, in a normal terminal?
+- For a chat: was Claude started with `claude` in a normal terminal (not `hat run`)?
+  Are the Hats hooks in `~/.claude/settings.json`? Run `python3 install.py` again to add them.
 
 **It says "no usage yet".** Hats hasn't seen that account used in Claude Code on this
 computer. Start `claude` on it once (`hat run work`) and the numbers appear.

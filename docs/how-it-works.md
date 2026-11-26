@@ -99,7 +99,7 @@ three out again:
 | --- | --- |
 | `~/.config/hats/` | The tool's files, settings and a small cache. |
 | Your shell's start-up file: `~/.bashrc`, `~/.zshrc`, on macOS bash's login file, or the PowerShell `$PROFILE` | Adds one line ending in `# hats: Claude Code accounts`. The rest of the file is kept byte for byte. |
-| `~/.claude/settings.json` | Adds the status line (only if you have none) and one `SessionStart` hook that tells Claude its account. Your own hooks stay as they are, and the file keeps its formatting. A backup goes to `settings.json.pre-hats.bak`. If the file isn't valid JSON, it is left alone. |
+| `~/.claude/settings.json` | Adds the status line (only if you have none) and three hooks that run `hat.py`: `SessionStart` tells Claude its account; `Stop` and `StopFailure` let [automatic switching](settings.md) move a chat on when a task finishes or a limit runs out (they do nothing while switching is off). Your own hooks stay as they are, and the file keeps its formatting. A backup goes to `settings.json.pre-hats.bak`. If the file isn't valid JSON, it is left alone. |
 
 - **New folders:** each account you add creates `~/.claude-profiles/<name>`.
 - **Backups:** these are left in place after uninstalling, for you to delete:

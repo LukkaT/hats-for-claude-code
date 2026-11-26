@@ -32,6 +32,13 @@ FAKE_CLAUDE = textwrap.dedent("""\
         import subprocess
         subprocess.run([sys.executable, os.environ["FAKE_HAT"], "statusline"],
                        input=os.environ["FAKE_STATUS"], text=True, capture_output=True)
+        if os.environ.get("FAKE_HOOK"):
+            # A task ends (Stop) or fails (StopFailure): Claude Code runs Hats's hook.
+            hook = json.loads(os.environ["FAKE_HOOK"])
+            subprocess.run([sys.executable, os.environ["FAKE_HAT"], hook["cmd"]],
+                           input=json.dumps(hook["input"]), text=True, capture_output=True)
+            import time
+            time.sleep(15)  # waits for the next prompt, until Hats ends it
     if sys.argv[1:3] == ["auth", "logout"] and d:
         for name in (".credentials.json",):
             p = os.path.join(d, name)
@@ -553,6 +560,50 @@ class HatTest(unittest.TestCase):
         self.assertEqual(calls[1], {"dir": self.path(".claude-profiles/work"), "args": ["--resume", "chat-123"]})
         self.assertEqual(os.listdir(self.path(".config/hats/runs")), [], "the note of the chat is removed")
 
+    def test_a_low_chat_moves_on_by_itself_when_the_task_finishes(self):
+        self.switching("personal", "work")
+        status = json.dumps({"session_id": "chat-123", "rate_limits": {"five_hour": {"used_percentage": 92}}})
+        hook = json.dumps({"cmd": "turn-end", "input": {"session_id": "chat-123", "hook_event_name": "Stop"}})
+        out = self.pty_hat(["claude"], [], env={"FAKE_STATUS": status, "FAKE_HOOK": hook, "FAKE_HAT": HAT})
+        self.assertIn("'personal' has 8% left of its 5-hour limit → this chat continues on 'work'", out)
+        self.assertNotIn("[Y/n]", out, "no question: it moves by itself")
+        calls = self.claude_calls()
+        self.assertEqual(calls[1], {"dir": self.path(".claude-profiles/work"), "args": ["--resume", "chat-123"]})
+        self.assertEqual(os.listdir(self.path(".config/hats/runs")), [])
+
+    def test_when_the_limit_runs_out_mid_task_the_task_continues_on_the_next_account(self):
+        self.switching("personal", "work")
+        status = json.dumps({"session_id": "chat-9", "rate_limits": {"five_hour": {"used_percentage": 40}}})
+        hook = json.dumps({"cmd": "turn-failed", "input": {"session_id": "chat-9", "error": "rate_limit"}})
+        out = self.pty_hat(["claude"], [], env={"FAKE_STATUS": status, "FAKE_HOOK": hook, "FAKE_HAT": HAT})
+        self.assertIn("'personal' reached its usage limit → continuing this task on 'work'", out)
+        self.assertEqual(self.claude_calls()[1]["args"][:2], ["--resume", "chat-9"])
+        self.assertIn("Continue where you stopped", self.claude_calls()[1]["args"][2])
+
+    def test_the_hooks_leave_no_note_unless_a_watched_chat_should_move(self):
+        self.switching("personal", "work")
+        self.write(".config/hats/usage/personal", "95|9999999999||\n")
+        run = "0123456789abcdef0123456789abcdef"
+        note = self.path(".config/hats/runs/%s.switch" % run)
+        stop = json.dumps({"session_id": "c1"})
+        self.assertEqual(self.hat("turn-end", stdin=stop).stdout, "")
+        self.assertFalse(os.path.exists(note), "not a watched run")
+        self.hat("turn-end", stdin=json.dumps({"session_id": "c1", "background_tasks": [{"id": "b1"}]}),
+                 env={"HAT_RUN": run})
+        self.assertFalse(os.path.exists(note), "a background task would be cut off")
+        self.hat("turn-failed", stdin=json.dumps({"session_id": "c1", "error": "server_error"}), env={"HAT_RUN": run})
+        self.assertFalse(os.path.exists(note), "only the usage limit moves a chat")
+        self.write(".config/hats/usage/personal", "50|9999999999||\n")
+        self.hat("turn-end", stdin=stop, env={"HAT_RUN": run})
+        self.assertFalse(os.path.exists(note), "personal still has room")
+        self.write(".config/hats/usage/personal", "95|9999999999||\n")
+        r = self.hat("turn-end", stdin=stop, env={"HAT_RUN": run})
+        self.assertEqual((r.stdout, r.stderr), ("", ""), "a hook prints nothing in Claude's screen")
+        self.assertEqual(json.loads(self.read(".config/hats/runs/%s.switch" % run)),
+                         {"to": "work", "chat": "c1", "why": "low"})
+        self.assertEqual(self.hat("turn-end", stdin="not json", env={"HAT_RUN": run}).returncode, 0)
+
+
     def test_answering_no_keeps_the_chat_where_it_is(self):
         self.switching("personal", "work")
         status = json.dumps({"session_id": "chat-123", "rate_limits": {"five_hour": {"used_percentage": 96}}})
@@ -564,11 +615,11 @@ class HatTest(unittest.TestCase):
         data = json.dumps({"session_id": "c1", "rate_limits": {"five_hour": {"used_percentage": 95}}})
         run = "0123456789abcdef0123456789abcdef"
         out = self.hat("statusline", stdin=data, env={"HAT_RUN": run}).stdout
-        self.assertIn("/exit → continue on work", out)
+        self.assertIn("low: moves to work after this task", out)
         self.assertEqual(self.read(".config/hats/runs/" + run).strip(), "c1")
-        self.assertNotIn("/exit", self.hat("statusline", stdin=data).stdout)
+        self.assertNotIn("moves to", self.hat("statusline", stdin=data).stdout)
         bad = self.hat("statusline", stdin=data, env={"HAT_RUN": "../../evil"}).stdout
-        self.assertNotIn("/exit", bad)
+        self.assertNotIn("moves to", bad)
         self.assertFalse(os.path.exists(self.path(".config/evil")))
 
     def test_settings_screen_by_keys(self):
@@ -662,6 +713,10 @@ class HatTest(unittest.TestCase):
         self.assertEqual(len(hooks), 2)
         self.assertEqual(hooks[0], mine)
         self.assertTrue(hooks[1]["hooks"][0]["command"].endswith('hat.py" context'))
+        all_hooks = json.loads(self.read(".claude/settings.json"))["hooks"]
+        self.assertEqual(len(all_hooks["Stop"]), 1)
+        self.assertTrue(all_hooks["Stop"][0]["hooks"][0]["command"].endswith('hat.py" turn-end'))
+        self.assertTrue(all_hooks["StopFailure"][0]["hooks"][0]["command"].endswith('hat.py" turn-failed'))
         self.install("--uninstall")
         self.assertEqual(json.loads(self.read(".claude/settings.json")), {"hooks": {"SessionStart": [mine]}})
 
